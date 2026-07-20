@@ -1,0 +1,11 @@
+const fs = require('fs');
+const s = fs.readFileSync('dist/win-unpacked/resources/app.asar').toString('latin1');
+const has = (x) => s.indexOf(x) >= 0;
+console.log('  history module          : ' + has('contextTurns'));
+console.log('  history UI (view)       : ' + has('view-history'));
+console.log('  settings tabs           : ' + has('s-tabs'));
+console.log('  searchable providers    : ' + has('provider-search'));
+console.log('  cloud logo mark         : ' + has('M7.4 19C4.1 19 2 16.9'));
+console.log('  vision route            : ' + has('routes.vision') || has('vision'));
+console.log('  privacy (not stealth)   : ' + has('privacy'));
+console.log('  union region for menu   : ' + has('setUnionRegion'));

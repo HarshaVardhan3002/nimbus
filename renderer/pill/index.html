@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en" data-theme="obsidian">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:; font-src 'self'; media-src 'self' blob:;" />
+  <title>Nimbus</title>
+  <link rel="stylesheet" href="../shared/glass.css" />
+  <link rel="stylesheet" href="pill.css" />
+</head>
+<body>
+  <!-- SetWindowRgn clips the window to this element. Nothing may paint outside. -->
+  <div id="pill" class="glass" role="toolbar" aria-label="Nimbus">
+    <button id="mark" class="mark" title="Nimbus" aria-label="Nimbus menu" aria-haspopup="menu">
+      <span class="mark-glyph"></span>
+    </button>
+
+    <!-- Zero-width at rest. Only present when there is something to show. -->
+    <div id="stage" class="stage">
+      <div id="wave" class="wave" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
+      <div id="message" class="message" aria-live="polite"></div>
+    </div>
+
+    <div class="controls">
+      <button id="listen-btn" class="icon-btn" aria-pressed="false"></button>
+      <button id="toggle-btn" class="icon-btn" aria-expanded="false"></button>
+    </div>
+  </div>
+
+  <div id="menu" class="glass" role="menu">
+    <button class="menu-item" id="m-listen" role="menuitem">
+      <span class="ic"></span><span>Start listening</span><span class="sh">Ctrl ⇧ L</span>
+    </button>
+    <button class="menu-item" id="m-settings" role="menuitem">
+      <span class="ic"></span><span>Settings</span><span class="sh">Ctrl ,</span>
+    </button>
+    <div class="menu-sep"></div>
+    <button class="menu-item danger" id="m-quit" role="menuitem">
+      <span class="ic"></span><span>Quit Nimbus</span><span class="sh">Ctrl ⇧ Q</span>
+    </button>
+  </div>
+
+  <script src="../icons.js"></script>
+  <script src="../shared/audio.js"></script>
+  <script src="pill.js"></script>
+</body>
+</html>

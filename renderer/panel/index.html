@@ -1,0 +1,265 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:;" />
+  <title>Nimbus</title>
+  <link rel="stylesheet" href="../shared/glass.css" />
+  <link rel="stylesheet" href="panel.css" />
+</head>
+<body>
+  <!-- SetWindowRgn clips the OS window to this element. Anything painted
+       outside it is sliced off, and anything inside it is clickable. -->
+  <div id="panel" class="glass">
+
+    <!-- ============================== chat view ============================ -->
+    <section id="view-chat" class="view">
+      <!-- One row: which conversation, and the two things you do to conversations. -->
+      <header id="chat-head">
+        <button id="history-btn" class="icon-btn" title="History"></button>
+        <div id="convo-title">New conversation</div>
+        <button id="new-btn" class="icon-btn" title="New conversation (Ctrl+N)"></button>
+      </header>
+
+      <div id="messages" role="log" aria-live="polite"></div>
+
+      <div id="notice" class="notice"></div>
+
+      <div id="actions">
+        <button class="act" data-mode="assist"><span class="ic"></span><span>Assist</span></button>
+        <button class="act" data-mode="say"><span class="ic"></span><span>What do I say?</span></button>
+        <button class="act" data-mode="followup"><span class="ic"></span><span>Follow-ups</span></button>
+        <button class="act" data-mode="recap"><span class="ic"></span><span>Recap</span></button>
+        <button class="act" data-mode="translate"><span class="ic"></span><span>Translate</span></button>
+        <button class="act" data-mode="screenshot"><span class="ic"></span><span>My screen</span></button>
+      </div>
+
+      <div id="composer">
+        <div id="input-area">
+          <div id="placeholder">Ask about your screen or what you're hearing</div>
+          <textarea id="input" rows="1" spellcheck="false" aria-label="Message"></textarea>
+        </div>
+        <div id="composer-bottom">
+          <button id="smart" class="chip" title="Use the smart model"><span class="ic"></span><span>Smart</span></button>
+          <button id="model-chip" class="chip subtle" title="Active model"><span id="model-name">-</span></button>
+          <div class="spacer"></div>
+          <button id="send" class="send" title="Send (Enter)"></button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================= history view ========================== -->
+    <section id="view-history" class="view hidden">
+      <header class="s-head">
+        <div class="s-title">History</div>
+        <button id="h-close" class="icon-btn" title="Back"></button>
+      </header>
+      <input id="h-search" type="text" placeholder="Search conversations" spellcheck="false" />
+      <div id="h-list" class="h-list"></div>
+      <footer class="s-foot">
+        <span id="h-count" class="s-hint"></span>
+        <div class="spacer"></div>
+        <button id="h-clear" class="ghost-btn small">Delete all</button>
+      </footer>
+    </section>
+
+    <!-- ============================ settings view ========================== -->
+    <section id="view-settings" class="view hidden">
+      <header class="s-head">
+        <div class="s-title">Settings</div>
+        <button id="s-close" class="icon-btn" title="Back"></button>
+      </header>
+
+      <!-- Sections instead of one flat wall. Only one is open at a time, so the
+           screen shows the handful of controls you came for. -->
+      <nav id="s-tabs" class="s-tabs">
+        <button class="s-tab on" data-tab="models">Models</button>
+        <button class="s-tab" data-tab="voice">Voice</button>
+        <button class="s-tab" data-tab="privacy">Privacy</button>
+        <button class="s-tab" data-tab="look">Look</button>
+      </nav>
+
+      <div class="s-scroll">
+        <!-- Routing: each reasoning tier binds its own provider AND model. -->
+        <div class="s-group" data-tab="models">
+          <div class="s-label">Routing</div>
+          <div class="route-row">
+            <span class="route-tier">Fast</span>
+            <select id="route-fast-provider"></select>
+            <input id="route-fast-model" type="text" spellcheck="false" list="model-list" placeholder="model" />
+          </div>
+          <div class="route-hint" id="route-fast-hint"></div>
+          <div class="route-row">
+            <span class="route-tier smart">Smart</span>
+            <select id="route-smart-provider"></select>
+            <input id="route-smart-model" type="text" spellcheck="false" list="model-list" placeholder="model" />
+          </div>
+          <div class="route-hint" id="route-smart-hint"></div>
+          <div class="route-row">
+            <span class="route-tier">Vision</span>
+            <select id="route-vision-provider"></select>
+            <input id="route-vision-model" type="text" spellcheck="false" list="model-list" placeholder="optional" />
+          </div>
+          <div class="route-hint" id="route-vision-hint"></div>
+          <div class="s-hint" id="route-warning"></div>
+        </div>
+
+        <div class="s-group" data-tab="models">
+          <div class="s-label">Provider connections <span class="s-hint">keys and endpoints</span></div>
+          <input id="provider-search" type="text" placeholder="Search providers" spellcheck="false" />
+          <div id="provider-grid" class="provider-list"></div>
+          <button id="add-provider" class="ghost-btn"><span class="ic"></span><span>Add custom endpoint</span></button>
+        </div>
+
+        <div class="s-group" data-tab="models" id="provider-detail">
+          <div class="s-label">Connection</div>
+          <div class="s-row" id="row-baseurl">
+            <span>Base URL</span>
+            <input id="f-baseurl" type="text" spellcheck="false" placeholder="http://127.0.0.1:11434/v1" />
+          </div>
+          <div class="s-row" id="row-key">
+            <span>API key</span>
+            <input id="f-key" type="password" spellcheck="false" autocomplete="off" />
+          </div>
+          <div class="s-row">
+            <span>Display name</span>
+            <input id="f-label" type="text" spellcheck="false" placeholder="e.g. Lemonade box" />
+          </div>
+          <div id="custom-opts">
+            <label class="s-check">
+              <input id="f-needskey" type="checkbox" />
+              <span>This endpoint requires an API key <em>(vLLM --api-key, OpenRouter, Groq, an authenticated remote server)</em></span>
+            </label>
+            <label class="s-check">
+              <input id="f-local" type="checkbox" />
+              <span>Runs on this machine or LAN <em>(enables keep-warm pings and local error hints)</em></span>
+            </label>
+          </div>
+
+          <div class="s-label">Models</div>
+          <div class="s-row">
+            <span>Fast</span>
+            <input id="f-fast" type="text" spellcheck="false" list="model-list" />
+          </div>
+          <div class="s-row">
+            <span>Smart</span>
+            <input id="f-smart" type="text" spellcheck="false" list="model-list" />
+          </div>
+          <datalist id="model-list"></datalist>
+          <div class="s-row inline">
+            <button id="refresh-models" class="ghost-btn small"><span class="ic"></span><span>Refresh model list</span></button>
+            <span id="discover-status" class="s-hint"></span>
+          </div>
+          <label class="s-check">
+            <input id="f-vision" type="checkbox" />
+            <span>Model can see images <em>(needed for screen questions)</em></span>
+          </label>
+          <div class="s-hint" id="model-meta"></div>
+        </div>
+
+        <div class="s-group" data-tab="voice">
+          <div class="s-label">Transcription</div>
+          <div class="s-row">
+            <span>Engine</span>
+            <select id="f-stt">
+              <option value="local">Local Whisper server</option>
+              <option value="openai">OpenAI Whisper</option>
+              <option value="gemini">Gemini</option>
+              <option value="off">Off</option>
+            </select>
+          </div>
+          <div class="s-row" id="row-stt-url">
+            <span>Server</span>
+            <input id="f-stt-url" type="text" spellcheck="false" placeholder="http://127.0.0.1:8000/v1" />
+          </div>
+          <div class="s-row" id="row-stt-model">
+            <span>Model</span>
+            <input id="f-stt-model" type="text" spellcheck="false" list="stt-model-list" />
+          </div>
+          <datalist id="stt-model-list"></datalist>
+          <div class="s-row inline" id="row-stt-refresh">
+            <button id="refresh-stt" class="ghost-btn small"><span class="ic"></span><span>Find speech models</span></button>
+            <span id="stt-status" class="s-hint"></span>
+          </div>
+        </div>
+
+        <div class="s-group" data-tab="voice">
+          <div class="s-label">Listening</div>
+          <div class="s-row">
+            <span>Sensitivity</span>
+            <input id="f-vad" type="range" min="2" max="40" step="1" />
+            <span id="vad-val" class="s-hint"></span>
+          </div>
+          <div class="s-row">
+            <span>End of speech</span>
+            <input id="f-hangover" type="range" min="200" max="1500" step="50" />
+            <span id="hangover-val" class="s-hint"></span>
+          </div>
+          <label class="s-check">
+            <input id="f-listen-launch" type="checkbox" />
+            <span>Start listening when Nimbus launches</span>
+          </label>
+          <label class="s-check">
+            <input id="f-wake" type="checkbox" />
+            <span>Wake word <em>(triggers Assist when heard)</em></span>
+          </label>
+          <div class="s-row" id="row-wake">
+            <span>Phrase</span>
+            <input id="f-wake-word" type="text" spellcheck="false" />
+          </div>
+        </div>
+
+        <div class="s-group" data-tab="look">
+          <div class="s-label">Appearance</div>
+          <div class="s-row">
+            <span>Glass</span>
+            <select id="f-glass">
+              <option value="shaped">Shaped , exact pill, no desktop blur</option>
+              <option value="acrylic">Acrylic , real blur, square-ish corners</option>
+              <option value="blur">Blur , cheaper, square-ish corners</option>
+              <option value="off">Solid</option>
+            </select>
+          </div>
+          <div class="s-row">
+            <span>Text size</span>
+            <input id="f-zoom" type="range" min="80" max="160" step="5" />
+            <span id="zoom-val" class="s-hint"></span>
+          </div>
+
+          <div id="native-status" class="s-hint"></div>
+          <div id="build-status" class="s-hint"></div>
+        </div>
+
+        <div class="s-group" data-tab="privacy">
+          <div class="s-label">Screen privacy</div>
+          <label class="s-check">
+            <input id="f-stealth" type="checkbox" />
+            <span>Keep out of screen recordings and shares
+              <em>Excludes Nimbus from OBS, Zoom, Teams, Meet and screenshots, so a script or transcript on screen stays yours.</em></span>
+          </label>
+          <div id="stealth-status" class="s-hint"></div>
+
+          <div class="s-label">Conversation history</div>
+          <div class="s-row">
+            <span>Context</span>
+            <input id="f-ctx" type="range" min="0" max="30" step="2" />
+            <span id="ctx-val" class="s-hint"></span>
+          </div>
+          <div class="s-hint">Prior turns sent with each message. More context means better follow-ups and a slower first token.</div>
+        </div>
+      </div>
+
+      <footer class="s-foot">
+        <span id="apply-status" class="s-hint"></span>
+        <div class="spacer"></div>
+        <button id="relaunch-btn" class="ghost-btn small">Save &amp; relaunch</button>
+        <button id="apply-btn" class="primary-btn">Apply</button>
+      </footer>
+    </section>
+  </div>
+
+  <script src="../icons.js"></script>
+  <script src="panel.js"></script>
+</body>
+</html>

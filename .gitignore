@@ -1,0 +1,15 @@
+node_modules/
+dist/
+out/
+native/systemaudio
+*.log
+.DS_Store
+cue-data.json
+
+# Speaker model (28MB, fetched separately) and scratch test audio
+models/*.onnx
+spk_test/*.wav
+src/fonts/*.zip
+probe.js
+build.log
+dist/

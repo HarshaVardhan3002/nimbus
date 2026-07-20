@@ -1,0 +1,50 @@
+<!--
+  Nimbus mark.
+
+  A kumo cloud: lobed silhouette with inward spiral curls. Drawn as vector paths
+  rather than traced pixels so it stays clean at icon sizes and at 16px in the
+  pill. Stroke uses currentColor so the same file works on both themes.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 96" width="128" height="96" fill="none">
+  <g stroke="currentColor" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round">
+    <!-- outer silhouette: five lobes across the top, tapering right -->
+    <path d="M40 78
+             C 22 78, 12 68, 12 56
+             C 12 45, 20 37, 30 36
+             C 30 24, 39 16, 50 16
+             C 57 16, 63 19, 66 24
+             C 70 18, 77 15, 84 17
+             C 92 19, 97 26, 96 34
+             C 105 32, 113 38, 114 47
+             C 119 49, 122 55, 122 61
+             C 122 71, 114 78, 104 78
+             Z" />
+
+    <!-- upper-left curl -->
+    <path d="M46 40
+             C 46 50, 39 57, 31 57
+             C 26 57, 23 53, 23 49
+             C 23 45, 26 42, 30 43" />
+
+    <!-- centre curl, the largest -->
+    <path d="M74 56
+             C 74 68, 65 76, 54 76
+             C 47 76, 42 71, 42 65
+             C 42 60, 46 56, 51 57" />
+
+    <!-- lower-left curl -->
+    <path d="M38 62
+             C 38 70, 33 75, 27 75
+             C 23 75, 20 72, 20 68
+             C 20 65, 22 63, 25 63" />
+
+    <!-- right curl -->
+    <path d="M100 58
+             C 100 66, 94 72, 87 72
+             C 82 72, 79 69, 79 65
+             C 79 62, 81 60, 84 60" />
+
+    <!-- top-right wisp, echoes the seam between lobes -->
+    <path d="M70 34 C 78 32, 86 34, 90 39" />
+  </g>
+</svg>

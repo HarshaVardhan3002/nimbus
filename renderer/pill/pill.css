@@ -1,0 +1,136 @@
+/* ============================================================================
+   The pill.
+
+   Function-first rebuild. What does this object actually have to tell you?
+
+     1. Is it listening?        -> the mic button's own state, plus a live
+                                   waveform that only exists while listening
+     2. Is it working?          -> a breathing mark, no text
+     3. Is the chat open?       -> chevron direction
+     4. Did it just hear/say something worth seeing? -> transient text
+
+   Everything else was removed. The previous version showed a permanent "Ready"
+   label, which states what the absence of any other state already states, and
+   spun its logo on hover, which meant nothing at all. At rest this is now three
+   controls and no text.
+   ========================================================================= */
+
+body { display: inline-block; }
+
+#pill {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  width: max-content;
+  height: 38px;
+  padding: 0 5px;
+  border-radius: var(--r-pill);
+  white-space: nowrap;
+  cursor: grab;
+}
+#pill.dragging { cursor: grabbing; }
+
+/* ------------------------------------------------------------------ mark --- */
+/* Drag handle, menu trigger, and activity indicator. Three jobs, one element. */
+.mark {
+  position: relative;
+  width: 28px; height: 28px;
+  border-radius: 50%;
+  flex: none;
+  color: var(--tx-2);
+}
+.mark:hover { background: var(--bg-raise); color: var(--tx-1); }
+.mark-glyph { display: inline-flex; }
+
+/* Working. A slow breath, not a spinner: it signals "busy" without implying
+   measurable progress we do not have. */
+body.thinking .mark { color: var(--tx-1); }
+body.thinking .mark-glyph { animation: breathe 1.8s var(--ease) infinite; }
+@keyframes breathe {
+  0%, 100% { opacity: 0.45; transform: scale(0.94); }
+  50%      { opacity: 1;    transform: scale(1); }
+}
+
+/* ------------------------------------------------------------------ stage --- */
+/* Zero width at rest. Grows only when it has content. */
+.stage {
+  display: flex;
+  align-items: center;
+  max-width: 0;
+  overflow: hidden;
+  opacity: 0;
+  transition: max-width var(--t-normal) var(--ease), opacity var(--t-fast) var(--ease);
+}
+body.listening .stage,
+body.has-message .stage { max-width: 300px; opacity: 1; }
+
+.message {
+  font-size: 12.5px;
+  color: var(--tx-2);
+  padding: 0 8px;
+  max-width: 300px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.message:empty { display: none; }
+
+/* ---------------------------------------------------------------- waveform --- */
+.wave { display: none; align-items: center; gap: 2.5px; height: 16px; padding: 0 8px; }
+body.listening .wave { display: flex; }
+body.listening.has-message .wave { display: none; }
+
+.wave i {
+  display: block;
+  width: 2.5px; height: 3px;
+  border-radius: 2px;
+  background: var(--live);
+  opacity: 0.5;
+  transition: height 80ms var(--ease), opacity 80ms linear;
+}
+body.speech .wave i { opacity: 1; }
+
+/* ---------------------------------------------------------------- controls --- */
+.controls { display: flex; align-items: center; gap: 1px; flex: none; }
+
+/* Recording is the one state that gets colour, because mistaking it is costly. */
+#listen-btn.on { color: var(--live); }
+#listen-btn.on:hover { background: rgba(74, 222, 128, 0.14); }
+
+#toggle-btn .chev { display: inline-flex; transition: transform var(--t-normal) var(--ease); }
+#toggle-btn.open .chev { transform: rotate(180deg); }
+
+.mark, .icon-btn { cursor: pointer; }
+
+/* ------------------------------------------------------------------ menu --- */
+/* Answers "how do I quit this thing", which previously had no visible answer. */
+#menu {
+  position: absolute;
+  top: 42px; left: 4px;
+  min-width: 172px;
+  padding: 5px;
+  border-radius: var(--r-card);
+  z-index: 50;
+  opacity: 0;
+  transform: translateY(-4px);
+  pointer-events: none;
+  transition: opacity var(--t-fast) var(--ease), transform var(--t-fast) var(--ease);
+}
+#menu.open { opacity: 1; transform: none; pointer-events: auto; }
+
+.menu-item {
+  display: flex; align-items: center; gap: 9px;
+  width: 100%;
+  padding: 7px 9px;
+  border-radius: 7px;
+  color: var(--tx-1);
+  font-size: 12.5px;
+  text-align: left;
+  justify-content: flex-start;
+}
+.menu-item:hover { background: var(--bg-raise); }
+.menu-item .ic { display: inline-flex; color: var(--tx-3); width: 15px; }
+.menu-item .sh { margin-left: auto; color: var(--tx-3); font-family: var(--mono); font-size: 10.5px; }
+.menu-item.danger { color: var(--danger); }
+.menu-item.danger:hover { background: rgba(248, 113, 113, 0.12); }
+.menu-sep { height: 1px; margin: 4px 6px; background: var(--line); }

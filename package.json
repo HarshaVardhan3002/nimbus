@@ -1,0 +1,74 @@
+{
+  "name": "nimbus",
+  "version": "0.2.0",
+  "description": "Windows-native agentic overlay. Local-first, provider-agnostic, speaker-aware.",
+  "license": "GPL-3.0-or-later",
+  "author": "Harsha",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "cross-env CUE_DEV=1 electron .",
+    "pack": "electron-builder --dir",
+    "dist": "electron-builder --win nsis",
+    "check": "node scripts/check.js",
+    "icon": "node scripts/set-icon.js"
+  },
+  "build": {
+    "appId": "com.nimbus.overlay",
+    "productName": "Nimbus",
+    "asar": true,
+    "asarUnpack": [
+      "node_modules/koffi/**/*",
+      "node_modules/sherpa-onnx-node/**/*",
+      "node_modules/sherpa-onnx-*/**/*",
+      "node_modules/onnxruntime-node/**/*",
+      "models/**/*"
+    ],
+    "files": [
+      "main.js",
+      "preload.js",
+      "src/**/*",
+      "renderer/**/*",
+      "models/**/*",
+      "build/icon.*"
+    ],
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "artifactName": "Nimbus-${version}-setup.${ext}",
+      "icon": "build/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "afterPack": "scripts/after-pack.js"
+  },
+  "keywords": [
+    "electron",
+    "overlay",
+    "windows",
+    "acrylic",
+    "ai",
+    "assistant",
+    "ollama",
+    "local-llm"
+  ],
+  "devDependencies": {
+    "cross-env": "^7.0.3",
+    "electron": "^43.1.1",
+    "electron-builder": "^25.1.8"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.65.0",
+    "@google/genai": "^1.30.0",
+    "koffi": "^2.12.0",
+    "lucide-static": "^0.545.0",
+    "onnxruntime-node": "^1.27.0",
+    "openai": "^6.9.0",
+    "sherpa-onnx-node": "^1.13.4"
+  },
+  "productName": "Nimbus"
+}
