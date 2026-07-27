@@ -6,6 +6,21 @@
 
 <p align="center"><strong>A Windows-native, local-first AI overlay for screen context, live conversation, and quick answers.</strong></p>
 
+<p align="center">
+  <a href="https://github.com/HarshaVardhan3002/nimbus/releases/latest"><img src="https://img.shields.io/github/v/release/HarshaVardhan3002/nimbus?label=release" alt="Latest release"></a>
+  <a href="https://github.com/HarshaVardhan3002/nimbus/releases/latest"><img src="https://img.shields.io/github/downloads/HarshaVardhan3002/nimbus/total?label=downloads" alt="Downloads"></a>
+  <img src="https://img.shields.io/badge/platform-Windows%2010%2F11%20x64-blue" alt="Platform: Windows 10/11 x64">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0--or--later-green" alt="License: GPL-3.0-or-later"></a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/HarshaVardhan3002/nimbus/releases/latest"><strong>Download the installer</strong></a>
+  · <a href="#quick-start">Quick start</a>
+  · <a href="#roadmap">Roadmap</a>
+</p>
+
+> The installer is not code-signed, so Windows SmartScreen warns on first run: choose **More info** → **Run anyway**. It installs per user and does not require admin.
+
 Nimbus is an Electron desktop assistant that stays in a compact pill until you need it. It can stream responses from local or cloud models, look at the current screen when the selected model supports vision, transcribe microphone and system audio through an independent speech-to-text backend, and retain searchable local conversation history.
 
 It is designed around two ideas:
@@ -57,7 +72,15 @@ Nimbus stays compact until you open the panel, then exposes the actions and sett
 
 ## Quick start
 
-### Prerequisites
+### Install the release
+
+Download `Nimbus-<version>-setup.exe` from the [latest release](https://github.com/HarshaVardhan3002/nimbus/releases/latest) and run it. Nothing else is required to use the app; a model endpoint is configured from inside Settings.
+
+### Run from source
+
+Use this when you want to modify Nimbus or run an unreleased build.
+
+#### Prerequisites
 
 - Windows 10 or 11
 - A current [Node.js LTS](https://nodejs.org/) release and npm
