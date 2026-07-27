@@ -20,7 +20,7 @@ const MODES = {
     userBubble: null,
     small: false,
     system:
-      'You are cue, a discreet real-time copilot overlaid on the user\'s screen. ' +
+      'You are Nimbus, a discreet real-time copilot overlaid on the user\'s screen. ' +
       'Look at the screenshot and the recent conversation, decide what the user needs RIGHT NOW, and deliver it with no preamble. ' +
       'If the screen shows a coding problem: give a short approach, then a correct solution in a fenced code block, then time and space complexity. ' +
       'If it is a conversation: answer the current question, or say exactly what the user should say next, in the first person. ' +
@@ -36,7 +36,7 @@ const MODES = {
     userBubble: 'What do I say?',
     small: false,
     system:
-      'You are cue, suggesting replies during a live conversation. ' +
+      'You are Nimbus, suggesting replies during a live conversation. ' +
       '"Them" is the other person; "You" is the user. Based on what Them just said and what You already said, ' +
       'draft ONE short, natural, confident reply the user can say out loud, in the first person. ' +
       'No quotes, no preamble, 1-3 sentences.',
@@ -51,7 +51,7 @@ const MODES = {
     userBubble: 'Follow-ups',
     small: true,
     system:
-      'You are cue. Given the conversation, suggest 2-4 sharp, relevant follow-up questions the user could ask next. ' +
+      'You are Nimbus. Given the conversation, suggest 2-4 sharp, relevant follow-up questions the user could ask next. ' +
       'Return them as a short bullet list and nothing else.',
     build(ctx) {
       const t = formatTranscript(ctx.transcript, 20);
@@ -64,7 +64,7 @@ const MODES = {
     userBubble: 'Recap',
     small: true,
     system:
-      'You are cue. Summarise the conversation for someone who joined late: key points, decisions, action items. ' +
+      'You are Nimbus. Summarise the conversation for someone who joined late: key points, decisions, action items. ' +
       'Short bullets under bold headers. Be brief.',
     build(ctx) {
       const t = formatTranscript(ctx.transcript, 0);
@@ -84,7 +84,7 @@ const MODES = {
     userBubble: 'Translate',
     small: false,
     system:
-      'You are cue, translating audio the user is listening to. ' +
+      'You are Nimbus, translating audio the user is listening to. ' +
       'Translate the supplied lines into the target language, preserving speaker order and tone. ' +
       'Output ONLY the translation, one line per source line. No transliteration, no commentary, no source text. ' +
       'If a line is already in the target language, pass it through unchanged.',
@@ -123,12 +123,23 @@ const MODES = {
   },
 
   ask: {
-    needsScreen: true,
+    /**
+     * Typed questions do NOT capture the screen.
+     *
+     * They used to. Every question, however self-contained, paid for a full
+     * screenshot: slower first token, a large image uploaded to whichever
+     * provider is configured, and -- on any text-only model -- a rejected
+     * request plus a warning banner about a screenshot the user never asked to
+     * send. Sending the screen to a third party should be a deliberate act, and
+     * it already has three deliberate entry points: the "My screen" action,
+     * Assist, and Solve.
+     */
+    needsScreen: false,
     userBubble: null, // the typed text becomes the bubble
     small: false,
     system:
-      'You are cue, a real-time copilot with access to the user\'s screen and live conversation. ' +
-      'Answer directly and concisely, grounded in what is on screen and what was said. No preamble.',
+      'You are Nimbus, a real-time copilot with access to the user\'s live conversation. ' +
+      'Answer directly and concisely, grounded in what was said. No preamble.',
     build(ctx) {
       const t = formatTranscript(ctx.transcript, 12);
       return (t ? 'Recent conversation:\n' + t + '\n\n' : '') + 'Question: ' + ctx.userText;

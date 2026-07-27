@@ -45,6 +45,25 @@ const providers = require('./providers');
 const DEFAULT_INTERVAL_MS = 12000;
 const PING_TIMEOUT_MS = 20000;
 
+/**
+ * Is this endpoint actually on this machine or LAN?
+ *
+ * The `local` flag alone is not enough to trust. A custom provider is created
+ * with `local: true` and a loopback base URL, and nothing resets the flag when
+ * the URL is later repointed at a metered cloud API -- which would then be
+ * billed for a completion every 12 seconds, forever, invisibly. The host is the
+ * fact; the checkbox is only a claim about it.
+ */
+function isPrivateHost(url) {
+  let h;
+  try { h = new URL(url).hostname.toLowerCase(); } catch { return false; }
+  if (h === 'localhost' || h.endsWith('.localhost') || h.endsWith('.local')) return true;
+  if (h === '::1' || h === '[::1]') return true;
+  if (/^127\./.test(h) || /^10\./.test(h) || /^192\.168\./.test(h)) return true;
+  if (/^172\.(1[6-9]|2\d|3[01])\./.test(h)) return true;
+  return false;
+}
+
 class WarmthKeeper {
   constructor({ getSettings, onEvent } = {}) {
     this.getSettings = getSettings;
@@ -128,6 +147,7 @@ class WarmthKeeper {
     // Only local endpoints benefit. Pinging a metered cloud API on a timer
     // would burn tokens for nothing.
     if (!p || !p.ready || !p.local || p.kind !== providers.OPENAI_COMPATIBLE) return;
+    if (!isPrivateHost(p.baseURL)) return;
 
     this.inFlight = true;
     const t0 = Date.now();
@@ -188,4 +208,4 @@ class WarmthKeeper {
   }
 }
 
-module.exports = { WarmthKeeper, DEFAULT_INTERVAL_MS };
+module.exports = { WarmthKeeper, DEFAULT_INTERVAL_MS, isPrivateHost };

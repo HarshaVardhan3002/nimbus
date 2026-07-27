@@ -156,6 +156,17 @@
             <span>Model can see images <em>(needed for screen questions)</em></span>
           </label>
           <div class="s-hint" id="model-meta"></div>
+
+          <!--
+            End-to-end check. "Refresh model list" only proves the server
+            answers /v1/models; this actually generates a token with the model
+            and key that are configured here, which is the thing that was
+            failing silently.
+          -->
+          <div class="s-row inline">
+            <button id="test-provider" class="ghost-btn small"><span class="ic"></span><span>Test connection</span></button>
+            <span id="test-status" class="s-hint"></span>
+          </div>
         </div>
 
         <div class="s-group" data-tab="voice">
@@ -215,9 +226,9 @@
           <div class="s-row">
             <span>Glass</span>
             <select id="f-glass">
-              <option value="shaped">Shaped , exact pill, no desktop blur</option>
-              <option value="acrylic">Acrylic , real blur, square-ish corners</option>
-              <option value="blur">Blur , cheaper, square-ish corners</option>
+              <option value="shaped">Shaped — exact pill, no desktop blur</option>
+              <option value="acrylic">Acrylic — real blur, square-ish corners</option>
+              <option value="blur">Blur — cheaper, square-ish corners</option>
               <option value="off">Solid</option>
             </select>
           </div>
@@ -247,6 +258,14 @@
             <span id="ctx-val" class="s-hint"></span>
           </div>
           <div class="s-hint">Prior turns sent with each message. More context means better follow-ups and a slower first token.</div>
+
+          <div class="s-label">Reply length</div>
+          <div class="s-row">
+            <span>Ceiling</span>
+            <input id="f-maxtok" type="range" min="512" max="16384" step="512" />
+            <span id="maxtok-val" class="s-hint"></span>
+          </div>
+          <div class="s-hint">Maximum tokens in one answer. Reasoning models spend this budget thinking before they write, so a low ceiling can leave them with no room to answer at all.</div>
         </div>
       </div>
 

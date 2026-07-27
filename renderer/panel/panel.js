@@ -22,6 +22,11 @@
   let busy = false;
   let aiEl = null;
   let caretEl = null;
+  // Reasoning models stream their scratchpad on a separate channel. It used to
+  // be dropped on the floor, so a model that thought for 20s looked frozen.
+  let thinkEl = null;
+  let thinkBody = null;
+  let thinkStart = 0;
 
   // ---- icons ---------------------------------------------------------------
   const ACT_ICONS = {
@@ -37,6 +42,7 @@
   $('#new-btn').innerHTML = icon('plus', { size: 16 });
   $('#add-provider .ic').innerHTML = icon('plus', { size: 13 });
   $('#refresh-models .ic').innerHTML = icon('refresh-cw', { size: 12 });
+  $('#test-provider .ic').innerHTML = icon('zap', { size: 12 });
   $('#refresh-stt .ic').innerHTML = icon('mic', { size: 12 });
 
   // ---- viewport-independent layout caps ------------------------------------
@@ -174,8 +180,43 @@
     messages.appendChild(wrap);
   }
 
+  /**
+   * The thinking block, streamed live and collapsed the moment a real answer
+   * starts. Kept visible on failure: when a reasoning model burns its whole
+   * budget without answering, this is the only thing that explains the error.
+   */
+  function appendReasoning(t) {
+    if (!aiEl) startAi(false);
+    if (!thinkEl) {
+      thinkStart = Date.now();
+      thinkEl = document.createElement('details');
+      thinkEl.className = 'think';
+      thinkEl.open = true;
+      const sum = document.createElement('summary');
+      sum.textContent = 'Thinking…';
+      thinkBody = document.createElement('div');
+      thinkBody.className = 'think-body';
+      thinkEl.appendChild(sum);
+      thinkEl.appendChild(thinkBody);
+      aiEl.parentElement.insertBefore(thinkEl, aiEl);
+    }
+    thinkBody.textContent += t;
+    thinkBody.scrollTop = thinkBody.scrollHeight;
+    messages.scrollTop = messages.scrollHeight;
+    reportSize();
+  }
+
+  function sealThinking(label) {
+    if (!thinkEl) return;
+    const secs = Math.max(1, Math.round((Date.now() - thinkStart) / 1000));
+    thinkEl.querySelector('summary').textContent = label || ('Thought for ' + secs + 's');
+    thinkEl.open = false;
+  }
+
   function appendToken(t) {
     if (!aiEl) startAi(false);
+    // First real content ends the thinking phase.
+    if (thinkEl && thinkEl.open) { sealThinking(); reportSize(); }
     aiEl.dataset.raw += t;
     const span = document.createElement('span');
     span.className = 'tok';
@@ -187,9 +228,10 @@
   function finalizeAi() {
     if (!aiEl) return;
     const raw = aiEl.dataset.raw || '';
+    sealThinking();
     aiEl.innerHTML = renderMarkdown(raw);
     if (raw.trim() && aiEl.parentElement) attachCopy(aiEl.parentElement, () => raw);
-    aiEl = null; caretEl = null;
+    aiEl = null; caretEl = null; thinkEl = null; thinkBody = null;
     reportSize();
   }
 
@@ -206,6 +248,12 @@
   function setBusy(v) {
     busy = v;
     sendBtn.classList.toggle('busy', v);
+    // While a request is in flight the send button becomes a stop button.
+    // `abort` was wired through preload and main and never called from anywhere,
+    // so a slow or runaway answer could not be cancelled at all.
+    sendBtn.innerHTML = icon(v ? 'stop-square' : 'corner-down-left', { size: 15 });
+    sendBtn.title = v ? 'Stop (Esc)' : 'Send (Enter)';
+    sendBtn.setAttribute('aria-label', v ? 'Stop generating' : 'Send');
     $$('.act').forEach((b) => { b.disabled = v; });
   }
 
@@ -237,7 +285,8 @@
     syncPlaceholder();
     runMode('ask', text);
   }
-  sendBtn.addEventListener('click', send);
+  function stop() { if (busy) app.abort(); }
+  sendBtn.addEventListener('click', () => (busy ? stop() : send()));
   input.addEventListener('keydown', (e) => {
     if (e.key !== 'Enter') return;
     // Mid-IME composition, Enter commits the candidate. Stealing it there would
@@ -316,7 +365,9 @@
       const t = document.createElement('span'); t.className = 't'; t.textContent = s.title;
       const m = document.createElement('span'); m.className = 'm';
       m.textContent = fmtWhen(s.updatedAt) + '  ·  ' + s.count + (s.count === 1 ? ' message' : ' messages')
-        + (s.snippet ? '  ·  ' + s.snippet : '');
+        // `snippet` exists only on search hits; the plain list carries `preview`.
+        // Reading just the former left every unsearched row with no context.
+        + (s.snippet || s.preview ? '  ·  ' + (s.snippet || s.preview) : '');
       b.appendChild(t); b.appendChild(m);
 
       const kill = document.createElement('span');
@@ -399,13 +450,14 @@
       b.className = 'p-row' + (p.id === editingProvider ? ' on' : '');
       b.innerHTML = '<span class="nm">' + esc(p.label) + '</span>' +
         (p.local ? '<span class="tag">local</span>' : '');
+      // Selecting a row opens it for editing. It deliberately does NOT change
+      // which provider answers: that is what the routes above are for, and
+      // silently re-pointing every tier because someone clicked a card to check
+      // its API key was the single most confusing behaviour in this screen.
       b.addEventListener('click', async () => {
         await persistProvider();
         editingProvider = p.id;
-        settings.provider = p.id;
-        await app.settingsSet({ provider: p.id });
         renderSettings();
-        refreshModelChip();
       });
       if (p.custom) {
         const kill = document.createElement('span');
@@ -484,7 +536,6 @@
     const bits = [];
     if (!inp.value.trim()) bits.push('no model chosen');
     if (p.needsKey && !((settings.apiKeys || {})[p.id] || '').trim()) bits.push('needs an API key');
-    const ttft = null; // filled by warmth telemetry below
     hint.textContent = bits.length
       ? bits.join(' · ')
       : (p.local ? 'local, kept warm automatically' : 'remote endpoint');
@@ -504,12 +555,24 @@
 
   for (const tier of ['fast', 'smart', 'vision']) {
     $('#route-' + tier + '-provider').addEventListener('change', () => persistRoute(tier));
+    // 'change' already fires on blur when the value actually changed, so a
+    // second blur listener only bought a duplicate write plus a re-render that
+    // fought whatever the user clicked next.
     $('#route-' + tier + '-model').addEventListener('change', () => persistRoute(tier));
-    $('#route-' + tier + '-model').addEventListener('blur', () => persistRoute(tier));
   }
 
   function renderSettings() {
-    if (!editingProvider) editingProvider = settings.provider;
+    /**
+     * Resolve the edit target BEFORE painting the list, and re-resolve it every
+     * render. Deleting a custom provider (or removing one from the registry)
+     * left `editingProvider` pointing at nothing, and the detail pane below then
+     * kept showing the dead entry's key and models -- edits to it went nowhere.
+     */
+    if (!providerList.some((x) => x.id === editingProvider)) {
+      editingProvider = providerList.some((x) => x.id === settings.provider)
+        ? settings.provider
+        : (providerList[0] && providerList[0].id) || null;
+    }
     renderProviders();
     renderRoutes();
 
@@ -570,13 +633,25 @@
     $('#f-zoom').value = Math.round((ui.textZoom || 1) * 100);
     $('#zoom-val').textContent = Math.round((ui.textZoom || 1) * 100) + '%';
     $('#f-stealth').checked = !!ui.privacy;
-    refreshPrivacyStatus();
 
     const hcfg = settings.history || {};
     const ctx = typeof hcfg.contextTurns === 'number' ? hcfg.contextTurns : 12;
     $('#f-ctx').value = ctx;
     $('#ctx-val').textContent = ctx === 0 ? 'off' : ctx + ' turns';
+
+    const reply = settings.reply || {};
+    const mt = typeof reply.maxTokens === 'number' ? reply.maxTokens : 4096;
+    $('#f-maxtok').value = mt;
+    $('#maxtok-val').textContent = fmtTokens(mt);
+
+    // Was called twice, once under a name that does not exist. The undefined
+    // call threw before the two rows above ever ran, so the context slider sat
+    // at its markup default no matter what was saved.
     refreshStealthStatus();
+  }
+
+  function fmtTokens(n) {
+    return n >= 1000 ? (n / 1000).toFixed(n % 1000 ? 1 : 0) + 'k tokens' : n + ' tokens';
   }
 
   function describeSensitivity(v) {
@@ -720,6 +795,39 @@
 
   ['#f-fast', '#f-smart'].forEach((sel) => $(sel).addEventListener('change', syncModelMeta));
 
+  /**
+   * One button that answers "will this provider actually work?".
+   *
+   * The old settings screen could only list models, which passes against a
+   * server that then rejects every completion -- wrong key, model not loaded,
+   * a reasoning model with no room to answer. This runs a real one-line
+   * generation and reports latency, so a failure names itself here instead of
+   * appearing later as a blank bubble.
+   */
+  $('#test-provider').addEventListener('click', async () => {
+    const btn = $('#test-provider');
+    const status = $('#test-status');
+    if (btn.disabled) return;
+    await persistProvider();
+    btn.disabled = true;
+    status.className = 's-hint';
+    status.textContent = 'Testing…';
+    reportSize();
+    try {
+      const r = await app.testProvider(editingProvider);
+      // The message already carries latency and time-to-first-token. Appending
+      // them again printed the same number twice in one line.
+      status.textContent = r.message;
+      status.className = 's-hint ' + (r.level === 'ok' ? 'good' : r.level === 'warn' ? 'warn' : 'bad');
+    } catch (e) {
+      status.textContent = (e && e.message) || String(e);
+      status.className = 's-hint bad';
+    } finally {
+      btn.disabled = false;
+      reportSize();
+    }
+  });
+
   $('#refresh-stt').addEventListener('click', async () => {
     const status = $('#stt-status');
     status.textContent = 'Checking…';
@@ -798,6 +906,25 @@
     settings.audio = Object.assign({}, settings.audio, { wakeWord: $('#f-wake-word').value.trim().toLowerCase() });
     await app.settingsSet({ audio: settings.audio });
   });
+  /**
+   * The context slider had no listener at all: it rendered, it moved, and
+   * nothing was ever saved. Same class of bug as the reply-length control it
+   * now sits next to.
+   */
+  $('#f-ctx').addEventListener('input', async () => {
+    const v = Number($('#f-ctx').value);
+    $('#ctx-val').textContent = v === 0 ? 'off' : v + ' turns';
+    settings.history = Object.assign({}, settings.history, { contextTurns: v });
+    await app.settingsSet({ history: settings.history });
+  });
+
+  $('#f-maxtok').addEventListener('input', async () => {
+    const v = Number($('#f-maxtok').value);
+    $('#maxtok-val').textContent = fmtTokens(v);
+    settings.reply = Object.assign({}, settings.reply, { maxTokens: v });
+    await app.settingsSet({ reply: settings.reply });
+  });
+
   async function refreshStealthStatus() {
     try {
       const st = await app.stealthStatus();
@@ -905,14 +1032,25 @@
     reportSize();
   });
   app.on('llm:token', ({ text }) => appendToken(text));
+  app.on('llm:reasoning', ({ text }) => appendReasoning(text));
   app.on('llm:done', () => { finalizeAi(); setBusy(false); });
   app.on('llm:error', ({ message }) => {
-    if (aiEl && !aiEl.dataset.raw) {
+    // An empty answer with reasoning behind it is not an empty turn: dropping
+    // the bubble would also drop the only evidence of what the model did.
+    if (aiEl && !aiEl.dataset.raw && !thinkEl) {
       const w = aiEl.parentElement;
       if (w && w.classList.contains('turn')) w.remove(); else aiEl.remove();
       aiEl = null; caretEl = null;
     }
-    else finalizeAi();
+    else {
+      const stalled = !!(aiEl && !aiEl.dataset.raw && thinkEl);
+      const think = thinkEl;
+      finalizeAi();
+      if (stalled) {
+        think.querySelector('summary').textContent = 'Thought, but never answered';
+        think.open = true;
+      }
+    }
     setBusy(false);
     showNotice(message, 'error');
   });
@@ -926,6 +1064,9 @@
 
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
+      // Cancelling the answer outranks closing the panel. Hiding the window
+      // while a stream is live left it running, billing and unreadable.
+      if (busy) { e.preventDefault(); stop(); return; }
       if (!$('#view-settings').classList.contains('hidden')) persistProvider().then(() => showView('chat'));
       else if (!$('#view-history').classList.contains('hidden')) showView('chat');
       else app.togglePanel({});
@@ -977,7 +1118,7 @@
       $('#build-status').textContent =
         'Nimbus ' + info.version + ' · Electron ' + info.electron + ' · '
         + (info.packaged ? 'packaged build from ' + stamp : 'running from source')
-        + (info.packaged ? ' , rebuild after editing source' : '');
+        + (info.packaged ? ' — rebuild after editing source' : '');
       $('#build-status').style.color = info.packaged ? 'var(--warn)' : '';
     } catch { /* non-fatal */ }
 

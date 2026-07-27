@@ -129,7 +129,13 @@ function stripComments(src) {
     .replace(/<!--[\s\S]*?-->/g, ' ');
 }
 
-const SUPERSEDED = ['renderer/renderer.js', 'renderer/index.html', 'renderer/pcm-processor.js', 'renderer/styles.css'];
+/**
+ * The pre-split renderer (renderer/renderer.js, index.html, styles.css,
+ * pcm-processor.js) was deleted rather than kept as an exemption list: it was
+ * packaged by the `renderer/**` glob, so dead code was shipping in the
+ * installer, and an exemption list only makes stale files permanent.
+ */
+const SUPERSEDED = [];
 
 for (const f of jsFiles.concat(files.filter((x) => x.endsWith('.html')))) {
   if (f.startsWith('scripts/')) continue;

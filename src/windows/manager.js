@@ -182,8 +182,46 @@ class WindowManager {
     // show, and verifying the result, is the fix.
 
     win.loadFile(path.join(RENDERER, file));
+
+    /**
+     * A dead renderer used to stay dead.
+     *
+     * Both windows are frameless and never open devtools, so a crashed one is
+     * an empty transparent rectangle with no reload button and no tab to close
+     * -- the overlay is simply gone until the user kills the process. Seen for
+     * real: the GPU/network service died and took pill/index.html with it,
+     * leaving the log line and nothing else. Reload instead, and cap the
+     * attempts so a renderer that crashes on load does not spin.
+     */
+    let crashes = 0;
     win.webContents.on('render-process-gone', (_e, d) => {
       console.error('[nimbus] renderer gone:', file, JSON.stringify(d));
+      if (d && d.reason === 'clean-exit') return;
+      if (win.isDestroyed() || ++crashes > 3) return;
+      win.webContents.reload();
+    });
+
+    /**
+     * Renderer errors are otherwise invisible.
+     *
+     * Both windows are frameless, always-on-top and never opened with devtools,
+     * so a ReferenceError in panel.js kills the rest of a function and leaves no
+     * trace anywhere the developer will look -- which is exactly how an
+     * undefined call sat in the settings render path unnoticed. Warnings and
+     * errors are mirrored to the main process log always; the full firehose only
+     * under CUE_DEV.
+     */
+    win.webContents.on('console-message', (...args) => {
+      // Electron changed this signature: it used to be
+      // (event, level:number, message, line, sourceId) and is now a single
+      // details object. Read whichever shape arrived.
+      const d = (args[0] && typeof args[0].message === 'string')
+        ? args[0]
+        : { level: args[1], message: args[2], lineNumber: args[3], sourceId: args[4] };
+      const level = String(d.level === 2 ? 'warning' : d.level === 3 ? 'error' : (d.level || 'info'));
+      if (!process.env.CUE_DEV && level !== 'error' && level !== 'warning') return;
+      const where = d.sourceId ? ' ' + path.basename(String(d.sourceId)) + ':' + d.lineNumber : '';
+      console.log('[' + file + ' ' + level + where + ']', d.message);
     });
     if (show) win.once('ready-to-show', () => win.showInactive());
     return win;

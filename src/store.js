@@ -133,6 +133,19 @@ const DEFAULTS = {
     contextTurns: 12
   },
 
+  reply: {
+    /**
+     * Output token ceiling for one answer.
+     *
+     * Exposed because it is not merely a length preference on a reasoning
+     * model: the thinking tokens are drawn from this same budget, so a ceiling
+     * that is too low produces a model that thinks until it runs out and never
+     * writes an answer at all. src/llm.js reports that case by name and points
+     * back here.
+     */
+    maxTokens: 4096
+  },
+
   ui: {
     pillPosition: null,      // { x, y }; null = top centre of primary display
     textZoom: 1,

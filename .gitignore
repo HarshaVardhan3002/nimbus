@@ -12,4 +12,9 @@ spk_test/*.wav
 src/fonts/*.zip
 probe.js
 build.log
-dist/
+
+# Local tool state. .claude/ in particular can accumulate shell commands that
+# were run against this repo, which is exactly where a pasted API key ends up.
+.claude/
+.tokensave/
+nimbus-data.json

@@ -194,8 +194,20 @@ function resolve(settings, id) {
  */
 const TIERS = ['fast', 'smart'];
 
+/**
+ * Every routable slot, including the optional vision hand-off.
+ *
+ * TIERS is the fast/smart PAIR the Smart toggle switches between; 'vision' is
+ * not one of those, but it is a route and has to resolve like one. Keeping the
+ * two lists separate is what was missing: `createLLM(settings, 'vision')` fell
+ * through to the provider-id branch, looked for a provider literally called
+ * "vision", found none, and crashed -- so the vision hand-off in main.js could
+ * never fire.
+ */
+const ROUTE_TIERS = ['fast', 'smart', 'vision'];
+
 function routeFor(settings, tier) {
-  const t = TIERS.includes(tier) ? tier : (settings && settings.smart ? 'smart' : 'fast');
+  const t = ROUTE_TIERS.includes(tier) ? tier : (settings && settings.smart ? 'smart' : 'fast');
   const routes = (settings && settings.routes) || {};
   const r = routes[t] || {};
   return { tier: t, provider: r.provider || null, model: (r.model || '').trim() };
@@ -209,6 +221,10 @@ function routeFor(settings, tier) {
  */
 function resolveTier(settings, tier) {
   const route = routeFor(settings, tier);
+  // An unset vision route means "no hand-off", not "fall back to the global
+  // provider" -- falling back would send screen questions to the same text-only
+  // model the hand-off exists to avoid.
+  if (route.tier === 'vision' && !route.provider) return null;
   const providerId = route.provider || settings.provider;
   const base = resolve(settings, providerId);
   if (!base) return null;
@@ -274,10 +290,37 @@ const TTS_NAME = /kokoro|piper|bark|xtts|styletts|speecht5|text[-_]?to[-_]?speec
 const VISION_NAME = /vision|vl\b|-vl-|llava|moondream|internvl|qwen2?\.?5?-vl|gpt-4o|gemini|claude-3|pixtral|minicpm-v/i;
 const EMBED_NAME = /embed|bge-|gte-|e5-|nomic-embed|rerank/i;
 
+/**
+ * Declared input/output modalities, which several servers state outright even
+ * when they publish no `labels` array:
+ *
+ *   Academic Cloud / vLLM  input: ["text","image"]  output: ["text","thought"]
+ *   OpenRouter             architecture.input_modalities / output_modalities
+ *   others                 modalities: { input: [...], output: [...] }
+ *
+ * This is authoritative and was being thrown away. The consequence was concrete:
+ * a server that says a model accepts images had that ignored, VISION_NAME failed
+ * to match the model id, and every screen question silently went out without the
+ * screenshot -- so the app answered a question it could not see.
+ */
+function readModalities(m) {
+  const arch = (m && m.architecture) || {};
+  const mod = (m && m.modalities) || {};
+  const pick = (...cands) => {
+    for (const c of cands) if (Array.isArray(c)) return c.map((x) => String(x).toLowerCase());
+    return null;
+  };
+  const input = pick(m && m.input, arch.input_modalities, mod.input);
+  const output = pick(m && m.output, arch.output_modalities, mod.output);
+  if (!input && !output) return null;
+  return { input: input || [], output: output || [] };
+}
+
 function classifyModel(m) {
   const id = (m && (m.id || m.name)) || '';
   const labels = Array.isArray(m && m.labels) ? m.labels.map((x) => String(x).toLowerCase()) : [];
   const hasLabels = labels.length > 0;
+  const modal = readModalities(m);
 
   const isStt = hasLabels
     ? labels.some((l) => l.includes('transcription') || l === 'stt' || l === 'asr')
@@ -289,10 +332,21 @@ function classifyModel(m) {
 
   // Vision is the one that matters most: sending an image to a text-only model
   // is a hard failure, and on some servers it fails INSIDE a 200 response.
-  const vision = hasLabels ? labels.includes('vision') : VISION_NAME.test(id);
+  // Precedence is stated-capability first, name-guessing only as a last resort.
+  const vision = hasLabels ? labels.includes('vision')
+    : modal ? modal.input.includes('image')
+    : VISION_NAME.test(id);
+
+  // Audio IN does not make a transcription model: an omni chat model accepts
+  // speech alongside text and is still the thing you talk to, not the thing that
+  // transcribes for you. Only a model with no text input is an STT endpoint.
+  const audio = modal ? modal.input.includes('audio') : false;
 
   return {
     id,
+    // Servers that ship a human-readable name are worth showing it for; an id
+    // like "qwen3.5-397b-a17b" tells a user much less than "Qwen 3.5 397B".
+    name: (m && m.name && m.name !== id) ? String(m.name) : '',
     labels,
     // A chat model is anything that is not clearly a non-chat role.
     chat: !isStt && !isTts && !isEmbed,
@@ -300,12 +354,17 @@ function classifyModel(m) {
     tts: isTts,
     embed: isEmbed,
     vision,
-    // Whether `vision` is authoritative or a guess. The UI says so, because a
-    // wrong guess here produces a confusing backend error.
-    capabilitiesKnown: hasLabels,
+    audio,
+    // Whether the capabilities above are authoritative or a guess. The UI says
+    // so, because a wrong guess here produces a confusing backend error.
+    capabilitiesKnown: hasLabels || !!modal,
     contextWindow: readContextWindow(m),
-    reasoning: labels.includes('reasoning'),
-    tools: labels.includes('tool-calling')
+    // "thought" in the output modalities is a reasoning model announcing that it
+    // will spend tokens thinking before it answers. src/llm.js needs to know.
+    reasoning: hasLabels ? labels.includes('reasoning') : !!(modal && modal.output.includes('thought')),
+    tools: labels.includes('tool-calling'),
+    // Some servers list models that are registered but not loaded.
+    status: (m && m.status) ? String(m.status) : ''
   };
 }
 
@@ -321,6 +380,26 @@ function classifyModel(m) {
  * speech models for transcription and only vision models where an image is
  * going to be attached.
  */
+/**
+ * Turn an HTTP status from a bare endpoint into the sentence a user can act on.
+ * "HTTP 401 from https://.../models" tells you nothing about which of the two
+ * fields on screen is wrong.
+ */
+function httpHint(status, base, p) {
+  const who = (p && p.label) || 'the server';
+  if (status === 401 || status === 403) {
+    return p && p.hasKey
+      ? `${who} rejected the API key (HTTP ${status}). Check the key, and that it belongs to ${base}.`
+      : `${who} requires an API key (HTTP ${status}). Paste one into the API key field.`;
+  }
+  if (status === 404) {
+    return `No model list at ${base}/models (HTTP 404). The base URL usually has to end in /v1.`;
+  }
+  if (status === 429) return `${who} is rate-limiting this key (HTTP 429). Wait and retry.`;
+  if (status >= 500) return `${who} returned HTTP ${status}. The server is up but erroring.`;
+  return `HTTP ${status} from ${base}/models`;
+}
+
 async function discoverModels(settings, id, { timeoutMs = 6000 } = {}) {
   const p = resolve(settings, id);
   if (!p) return { ok: false, error: 'unknown provider', models: [] };
@@ -335,7 +414,7 @@ async function discoverModels(settings, id, { timeoutMs = 6000 } = {}) {
     const headers = { Accept: 'application/json' };
     if (p.hasKey) headers.Authorization = `Bearer ${p.apiKey}`;
     const res = await fetch(`${base}/models`, { headers, signal: ctrl.signal });
-    if (!res.ok) return { ok: false, error: `HTTP ${res.status} from ${base}/models`, models: [] };
+    if (!res.ok) return { ok: false, error: httpHint(res.status, base, p), models: [] };
     const json = await res.json();
     const raw = json && Array.isArray(json.data) ? json.data : [];
     const models = raw
@@ -361,6 +440,6 @@ async function discoverModels(settings, id, { timeoutMs = 6000 } = {}) {
 
 module.exports = {
   BUILTIN, BUILTIN_ORDER, NO_KEY, OPENAI_COMPATIBLE,
-  list, get, labelOf, resolve, resolveTier, routeFor, TIERS,
-  discoverModels, classifyModel, readContextWindow
+  list, get, labelOf, resolve, resolveTier, routeFor, TIERS, ROUTE_TIERS,
+  discoverModels, classifyModel, readContextWindow, readModalities, httpHint
 };

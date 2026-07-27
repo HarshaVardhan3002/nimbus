@@ -1,6 +1,6 @@
 'use strict';
 /**
- * cue — main process.
+ * Nimbus — main process.
  *
  * Responsibilities kept here: app lifecycle, window ownership, IPC, the STT
  * queue and the feature runner. Everything else is a module.
@@ -14,7 +14,7 @@ const win32 = require('./src/native/win32');
 const { WindowManager } = require('./src/windows/manager');
 const { captureScreenshot } = require('./src/screen');
 const { createSTT } = require('./src/stt');
-const { createLLM } = require('./src/llm');
+const { createLLM, testConnection } = require('./src/llm');
 const { MODES } = require('./src/prompts');
 const { WarmthKeeper } = require('./src/warmth');
 const history = require('./src/history');
@@ -74,7 +74,7 @@ async function transcribeOne(channel, pcm) {
     state.sttFailures++;
     // Surface the first failure, then go quiet. The old build set a permanent
     // disable flag on the first error, which meant starting the local server
-    // after cue required an app restart.
+    // after Nimbus required an app restart.
     if (state.sttFailures === 1) notify(res.error.message, 'error');
     if (state.sttFailures >= 5 && !state.sttMuted) {
       state.sttMuted = true;
@@ -217,6 +217,20 @@ async function runFeature(mode, userText) {
       turns,
       imageDataUrl,
       signal: abortController.signal,
+      maxTokens: Math.max(256, ((settings.reply || {}).maxTokens) || 4096),
+      /**
+       * A reasoning model can think for tens of seconds before it writes a
+       * single word of answer. Forwarding the reasoning channel is what keeps
+       * that from looking like a hang -- and it is the same data that used to
+       * be dropped on the floor, producing an empty bubble. See src/llm.js.
+       */
+      onReasoning: (t) => {
+        if (!sawFirstToken) {
+          sawFirstToken = true;
+          if (warmth) warmth.recordTTFT(activeLLM.provider, activeLLM.model, Date.now() - askedAt);
+        }
+        broadcast('llm:reasoning', { text: t });
+      },
       onToken: (t) => {
         if (!sawFirstToken) {
           sawFirstToken = true;
@@ -294,10 +308,18 @@ function registerIPC() {
     const glass = (patch && patch.glass) || (s.ui || {}).glass;
     if (wm && glass && glass !== wm.glassMode) { wm.applyGlass(glass); applied.push('glass'); }
 
-    // Content protection is set at window creation and cannot be toggled on a
-    // live HWND without recreating it, so it is the one that needs a relaunch.
-    if (patch && typeof patch.stealth === 'boolean' && patch.stealth !== !!wm.stealth) {
-      needsRestart.push('screen-capture hiding');
+    /**
+     * Screen-capture hiding no longer needs a relaunch.
+     *
+     * It was constructor-time only when this handler was written, so Apply
+     * reported "screen-capture hiding needs a relaunch" whenever the checkbox
+     * differed from the window state. WindowManager.applyStealth() has since
+     * made it a syscall on a live HWND, so the message was telling users to
+     * restart for something that had already taken effect. Apply it instead.
+     */
+    if (wm && patch && typeof patch.stealth === 'boolean' && patch.stealth !== !!wm.stealth) {
+      wm.applyStealth(patch.stealth);
+      applied.push('screen-capture hiding');
     }
     return { applied, needsRestart };
   });
@@ -309,6 +331,20 @@ function registerIPC() {
     return true;
   });
   ipcMain.handle('providers:discover', (_e, id) => providers.discoverModels(store.getSettings(), id));
+
+  /**
+   * One button that answers "is this provider actually usable?".
+   *
+   * Model discovery only proves the endpoint answers a GET; it says nothing
+   * about whether the key can generate or whether the chosen model exists.
+   */
+  ipcMain.handle('providers:test', async (_e, id) => {
+    try {
+      return await testConnection(store.getSettings(), id);
+    } catch (e) {
+      return { ok: false, level: 'error', message: (e && e.message) || String(e) };
+    }
+  });
 
   /**
    * Model discovery for the transcription endpoint.
@@ -337,7 +373,7 @@ function registerIPC() {
    * Build identity.
    *
    * Exists because a packaged build is a FROZEN COPY of the source. Running
-   * `dist/win-unpacked/cue.exe` after editing the source silently tests
+   * `dist/win-unpacked/Nimbus.exe` after editing the source silently tests
    * hour-old code, and nothing in the UI said so -- which cost a full debugging
    * round trip chasing a bug that had already been fixed. Now the build stamp
    * is on screen, and a packaged build older than the source is called out.
@@ -393,10 +429,17 @@ function registerIPC() {
 
   ipcMain.handle('warmth:status', () => {
     const s = store.getSettings();
+    // Resolved through the ACTIVE ROUTE. Reading s.provider / s.models here was
+    // left over from the single-provider shape, so the reported TTFT belonged to
+    // whichever provider happened to be in the legacy slot rather than to the
+    // model that is actually going to answer.
+    const active = providers.resolveTier(s, s.smart ? 'smart' : 'fast');
     return {
       ...(warmth ? warmth.status() : { enabled: false }),
       switchWarning: warmth ? warmth.switchWarning(s) : null,
-      ttft: warmth ? warmth.getTTFT(s.provider, ((s.models || {})[s.provider] || {})[s.smart ? 'smart' : 'fast']) : null
+      provider: active ? active.id : null,
+      model: active ? active.model : null,
+      ttft: (warmth && active) ? warmth.getTTFT(active.id, active.model) : null
     };
   });
 
@@ -475,7 +518,10 @@ function registerShortcuts() {
     if (open) toPanel('panel:focus-input', {});
   });
   bind(s.listen || 'Control+Shift+L', () => broadcast('listen:request', {}));
-  bind(s.quit || 'Control+Shift+X', () => app.quit());
+  // Fallback matches the store default. It used to be Control+Shift+X, which is
+  // the accelerator store.js v3 deliberately migrated AWAY from because it is
+  // commonly already taken -- so the fallback reintroduced the exact bug.
+  bind(s.quit || 'Control+Alt+Shift+Q', () => { store.flush(); app.quit(); });
 }
 
 // ---------------------------------------------------------------- lifecycle
@@ -496,7 +542,7 @@ app.whenReady().then(() => {
    * System-audio loopback.
    *
    * Handing back a screen source with audio:'loopback' lets the renderer
-   * capture whatever is playing through the default output device using cue's
+   * capture whatever is playing through the default output device using Nimbus's
    * own grant, with no virtual audio cable. This is the path that makes
    * "translate the video I am watching" work, and unlike macOS it needs no
    * third-party driver on Windows.
@@ -565,6 +611,6 @@ app.on('will-quit', () => {
   if (wm) wm.destroy();
 });
 
-// The pill is the app. Closing a window is not closing cue, and on Windows
+// The pill is the app. Closing a window is not closing Nimbus, and on Windows
 // there is no dock to return from.
 app.on('window-all-closed', () => app.quit());

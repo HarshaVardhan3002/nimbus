@@ -58,13 +58,13 @@ const MIN_FRAMES = 25; // ~250ms; below this the model input is meaningless
 
 /**
  * Default decision threshold on cosine similarity against the enrolled
- * centroid. Conservative on purpose: a false "that was the owner" causes cue to
+ * centroid. Conservative on purpose: a false "that was the owner" causes Nimbus to
  * act on a stranger's sentence, which is worse than missing one of yours.
  * Calibrated per-user by enrolment (see calibrate()).
  */
 // Set from the measured separation (genuine ~0.48, impostor ~0.18 on 4s
 // utterances). Sits nearer the impostor side because a false "that was the
-// owner" makes cue act on a stranger's sentence, which is worse than missing
+// owner" makes Nimbus act on a stranger's sentence, which is worse than missing
 // one of yours.
 const DEFAULT_THRESHOLD = 0.35;
 const UNCERTAIN_MARGIN = 0.05; // band either side of the threshold

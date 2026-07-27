@@ -111,6 +111,8 @@ All model setup is available in the Settings view; no `.env` file is required.
 
 Nimbus has independent **Fast**, **Smart**, and optional **Vision** routes. That means a quick local model can handle routine prompts while a cloud model handles more demanding work. A screen request is automatically redirected to the Vision route when the active chat model is configured as text-only.
 
+**Test connection** under Models answers the only question that matters after editing an endpoint: will this provider actually work? It checks that the server is reachable, that the key is accepted, that the model name exists on that server, and that a real generation streams back — then reports the reply, total latency, and time to first token. A provider that connects but returns nothing usable (for example a reasoning model that spends the whole token budget thinking) is reported as a warning with the specific cause, not as a success.
+
 ### Speech-to-text (optional)
 
 Speech transcription is deliberately separate from chat-model configuration. The default local setting expects any service that implements OpenAI's transcription route:
@@ -133,11 +135,15 @@ Point Settings at a compatible local server such as faster-whisper-server, whisp
 
 The panel also provides actions for an on-screen answer, live-conversation reply suggestions, follow-up questions, recaps, and translation. Typed questions and explicit screen questions preserve conversation context; one-shot actions intentionally operate on the current screen or transcript instead of old chat history.
 
+A typed question does not capture the screen. Sending the display to a provider is a deliberate act with three explicit entry points: the panel's screen action, <kbd>Ctrl</kbd>+<kbd>Enter</kbd> (assist) and <kbd>Ctrl</kbd>+<kbd>H</kbd> (solve).
+
 ## Features
 
 - **Two-window overlay:** pill and panel are separate native windows. When the panel is hidden, it is removed from hit testing rather than merely hidden in HTML.
 - **Screen-aware answers:** capture the primary display, resize to a bounded image, and send it only to a vision-capable route.
-- **Streaming responses:** tokens are forwarded to the panel as they arrive; an active request can be aborted.
+- **Streaming responses:** tokens are forwarded to the panel as they arrive; an active request can be aborted with the stop button or <kbd>Esc</kbd>.
+- **Visible reasoning:** models that stream a separate reasoning channel show a live "Thinking…" block that collapses into "Thought for *n*s" once the answer starts, so a slow reasoning model does not look like a hung one.
+- **Reply-length ceiling:** a per-answer token cap in Settings › Privacy, so a verbose or reasoning-heavy model cannot run away with the budget.
 - **Independent provider routing:** local and cloud endpoints can coexist, with separate Fast, Smart, and Vision assignments.
 - **Audio pipeline:** microphone and Windows loopback audio are segmented in an AudioWorklet using adaptive energy VAD, pre-roll, and a silence hangover before transcription.
 - **Conversation history:** sessions and a searchable index are stored locally, with a configurable number of earlier turns supplied as model context.

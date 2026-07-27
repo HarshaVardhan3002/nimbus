@@ -1,4 +1,4 @@
-# cue — architecture
+# Nimbus — architecture
 
 Windows-native agentic overlay. Electron 43 main process, two independently
 clipped OS windows, DWM acrylic via direct Win32 calls, provider-agnostic LLM
@@ -43,8 +43,8 @@ Two mechanisms working together:
    what prevents a measure/resize feedback loop.
 2. **Region clipping.** `SetWindowRgn` with a `CreateRoundRectRgn` clips the
    window — and therefore its hit-test area — to the exact rounded shape. A
-   click one pixel outside the visible rounded corner is not delivered to cue at
-   all.
+   click one pixel outside the visible rounded corner is not delivered to Nimbus
+   at all.
 
 > **DPI:** Electron bounds are DIPs, GDI regions are device pixels. On a 150%
 > display a 640 DIP window is 960 px. `manager._applyRegion()` multiplies by
@@ -191,8 +191,13 @@ would be silently blocked.
 
 Local checkpoints are usually text-only, so `vision` defaults to `false` for
 Ollama and LM Studio. When a screen-capture mode runs against a text-only
-model, cue skips the screenshot and says so, rather than silently answering a
+model, Nimbus skips the screenshot and says so, rather than silently answering a
 screen question blind.
+
+Typed questions never carry a screenshot at all (`MODES.ask.needsScreen` is
+`false`). They used to, which meant every self-contained question paid for a
+capture and — on a text-only route — produced a rejection banner about an image
+the user never asked to send.
 
 ---
 
@@ -396,7 +401,7 @@ honest either/or rather than a quality slider:
 ### 8.7 Glass mode lost to a startup race
 
 `broadcastGlass()` fires from `ready-to-show`, which can land *before* the
-renderer registers its `cue.on('glass:changed')` listener. The document then
+renderer registers its `nimbus.on('glass:changed')` listener. The document then
 never received the class that supplies its whole background, and the panel
 rendered almost fully transparent.
 
@@ -562,11 +567,11 @@ diagnosable instead of mysterious.
 
 | Area | State |
 |---|---|
-| Device control / agentic actions | **Not implemented.** cue reads (screen, audio) but cannot act. Needs a Windows UI Automation tool layer plus a tool-calling loop |
+| Device control / agentic actions | **Not implemented.** Nimbus reads (screen, audio) but cannot act. Needs a Windows UI Automation tool layer plus a tool-calling loop |
 | Neural VAD | Energy VAD only; `_classify()` is the swap point for Silero ONNX |
 | Always-on KWS | Transcript-matched wake word; latency bounded by STT round trip |
 | Streaming ASR | Not wired. Server Whisper dominates the voice-turn budget at ~3s; sherpa-onnx Zipformer would make it near-free |
 | Live translation | Mode exists and is wired to the loopback channel; it is turn-based off completed utterances, not continuous subtitle-style streaming |
 | Region during animation | Cleared for the ~370ms open animation and reinstated on settle, to avoid ~120 GDI syscalls/sec and the HRGN leak a mid-flight `SetWindowRgn` failure would cause |
-| Superseded files | `renderer/renderer.js`, `renderer/index.html`, `renderer/styles.css`, `renderer/pcm-processor.js` are unreferenced but still present — safe to delete |
+| Superseded files | Deleted. The pre-split renderer (`renderer/renderer.js`, `index.html`, `styles.css`, `pcm-processor.js`) shipped inside the asar via the `renderer/**` glob despite being unreachable |
 | Stealth mode | `ui.stealth` is off by default because it makes the overlay invisible on this hardware (8.1). If you need capture-hiding, enable it and verify the overlay still draws |

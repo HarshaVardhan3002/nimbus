@@ -45,6 +45,9 @@ function throwIfStreamError(part) {
 function looksLikeVisionRejection(err) {
   const msg = String((err && err.message) || '').toLowerCase();
   const status = err && (err.status || err.statusCode);
+  // The model answered; it just answered with nothing. Retrying without the
+  // image would burn a second round trip on the same outcome.
+  if (err && err.emptyAnswer) return false;
   if (/image|vision|multimodal|image_url|content parts|not support/.test(msg)) return true;
   // A backend that only says "request failed" with a 400 is ambiguous, but an
   // image is by far the most common reason a request that works without one
@@ -53,8 +56,45 @@ function looksLikeVisionRejection(err) {
   return false;
 }
 
+/**
+ * Reasoning deltas.
+ *
+ * A reasoning model streams its scratchpad in a delta field that is NOT
+ * `content`, and there is no agreed name for it:
+ *
+ *   vLLM / Academic Cloud / DeepSeek   delta.reasoning
+ *   OpenRouter / Fireworks / others    delta.reasoning_content
+ *   a few servers                      delta.thinking
+ *
+ * Reading only `delta.content` therefore produced a completely silent, empty
+ * answer with no error at all -- measured against qwen3.6-27b, where 200 of 200
+ * budgeted tokens arrived as `reasoning` and the single `content` delta was the
+ * empty string. The transport succeeded, the SDK had nothing to throw, and the
+ * user got a blank bubble. So the reasoning channel is read explicitly, shown
+ * live, and counted.
+ */
+function reasoningDelta(delta) {
+  if (!delta) return '';
+  const v = delta.reasoning_content != null ? delta.reasoning_content
+    : delta.reasoning != null ? delta.reasoning
+    : delta.thinking;
+  return typeof v === 'string' ? v : '';
+}
+
+/** Thrown when a model spent its whole budget thinking and never answered. */
+function emptyAnswerError(model, reasoningChars, finishReason) {
+  const e = new Error(
+    '"' + model + '" produced ' + reasoningChars + ' characters of reasoning and then ran out of '
+    + 'room before writing an answer'
+    + (finishReason === 'length' ? ' (finish_reason: length)' : '')
+    + '. Raise the reply length, or route this tier to a non-reasoning model.'
+  );
+  e.emptyAnswer = true;
+  return e;
+}
+
 // ------------------------------------------------------------------ openai
-async function streamOpenAI({ apiKey, model, baseURL, system, turns, imageDataUrl, maxTokens, onToken, signal }) {
+async function streamOpenAI({ apiKey, model, baseURL, system, turns, imageDataUrl, maxTokens, onToken, onReasoning, onNotice, signal }) {
   const OpenAI = require('openai');
   const client = new OpenAI({
     apiKey: apiKey || providers.NO_KEY,
@@ -88,18 +128,34 @@ async function streamOpenAI({ apiKey, model, baseURL, system, turns, imageDataUr
   );
 
   let full = '';
+  let reasoning = '';
+  let finishReason = null;
   for await (const part of stream) {
     throwIfStreamError(part);
     const choice = part && part.choices && part.choices[0];
+    if (choice && choice.finish_reason) finishReason = choice.finish_reason;
     const delta = choice && choice.delta;
     const d = delta && delta.content;
     if (d) { full += d; onToken(d); }
+    const r = reasoningDelta(delta);
+    if (r) { reasoning += r; if (onReasoning) onReasoning(r); }
+  }
+
+  // Silence is never an acceptable outcome. Either the model thought itself out
+  // of tokens (actionable, so say so), or the server returned nothing at all.
+  if (!full.trim()) {
+    if (reasoning.trim()) throw emptyAnswerError(model, reasoning.trim().length, finishReason);
+    throw new Error('"' + model + '" returned an empty response'
+      + (finishReason ? ' (finish_reason: ' + finishReason + ')' : '') + '.');
+  }
+  if (finishReason === 'length' && onNotice) {
+    onNotice({ level: 'warn', message: 'The answer was cut off at the reply-length limit.' });
   }
   return full;
 }
 
 // --------------------------------------------------------------- anthropic
-async function streamAnthropic({ apiKey, model, system, turns, imageDataUrl, maxTokens, onToken, signal }) {
+async function streamAnthropic({ apiKey, model, system, turns, imageDataUrl, maxTokens, onToken, onReasoning, onNotice, signal }) {
   const Anthropic = require('@anthropic-ai/sdk');
   const client = new Anthropic({ apiKey, maxRetries: 1 });
 
@@ -121,17 +177,35 @@ async function streamAnthropic({ apiKey, model, system, turns, imageDataUrl, max
   );
 
   let full = '';
+  let reasoning = '';
+  let stopReason = null;
   for await (const ev of stream) {
-    if (ev.type === 'content_block_delta' && ev.delta && ev.delta.type === 'text_delta') {
+    if (ev.type === 'message_delta' && ev.delta && ev.delta.stop_reason) stopReason = ev.delta.stop_reason;
+    if (ev.type !== 'content_block_delta' || !ev.delta) continue;
+    if (ev.delta.type === 'text_delta') {
       full += ev.delta.text;
       onToken(ev.delta.text);
+    } else if (ev.delta.type === 'thinking_delta' && ev.delta.thinking) {
+      // Extended thinking arrives on its own block type, exactly like the
+      // OpenAI-compatible `reasoning` channel.
+      reasoning += ev.delta.thinking;
+      if (onReasoning) onReasoning(ev.delta.thinking);
     }
+  }
+
+  if (!full.trim()) {
+    if (reasoning.trim()) throw emptyAnswerError(model, reasoning.trim().length, stopReason === 'max_tokens' ? 'length' : stopReason);
+    throw new Error('"' + model + '" returned an empty response'
+      + (stopReason ? ' (stop_reason: ' + stopReason + ')' : '') + '.');
+  }
+  if (stopReason === 'max_tokens' && onNotice) {
+    onNotice({ level: 'warn', message: 'The answer was cut off at the reply-length limit.' });
   }
   return full;
 }
 
 // ------------------------------------------------------------------ gemini
-async function streamGemini({ apiKey, model, system, turns, imageDataUrl, maxTokens, onToken }) {
+async function streamGemini({ apiKey, model, system, turns, imageDataUrl, maxTokens, onToken, onReasoning }) {
   const { GoogleGenAI } = require('@google/genai');
   const ai = new GoogleGenAI({ apiKey });
 
@@ -152,9 +226,29 @@ async function streamGemini({ apiKey, model, system, turns, imageDataUrl, maxTok
   });
 
   let full = '';
+  let reasoning = '';
   for await (const chunk of stream) {
+    /**
+     * Thinking parts are marked `thought: true` and must not be concatenated
+     * into the answer. `chunk.text` throws them in together, so the parts are
+     * walked directly and the two channels kept apart.
+     */
+    const parts = ((((chunk || {}).candidates || [])[0] || {}).content || {}).parts;
+    if (Array.isArray(parts)) {
+      for (const p of parts) {
+        if (typeof p.text !== 'string' || !p.text) continue;
+        if (p.thought) { reasoning += p.text; if (onReasoning) onReasoning(p.text); }
+        else { full += p.text; onToken(p.text); }
+      }
+      continue;
+    }
     const t = chunk && chunk.text;
     if (t) { full += t; onToken(t); }
+  }
+
+  if (!full.trim()) {
+    if (reasoning.trim()) throw emptyAnswerError(model, reasoning.trim().length, null);
+    throw new Error('"' + model + '" returned an empty response.');
   }
   return full;
 }
@@ -173,6 +267,9 @@ const TRANSPORTS = {
 function explain(err, p) {
   const msg = (err && err.message) || String(err);
   const status = err && (err.status || err.statusCode);
+  // Already a complete, model-named sentence. Wrapping it would repeat the
+  // model name and bolt a meaningless "(HTTP )" onto the end.
+  if (err && err.emptyAnswer) return msg;
   const where = p.baseURL ? ' (' + p.baseURL + ')' : '';
   // Always name the model. "Ollama: request failed" is useless when the slot is
   // pointed at some other server and one of twenty models is selected.
@@ -202,12 +299,29 @@ function explain(err, p) {
  *                  provider id to bypass routing (used by discovery).
  */
 function createLLM(settings, tierOrId) {
-  const p = providers.TIERS.includes(tierOrId) || tierOrId == null
+  // ROUTE_TIERS, not TIERS: 'vision' is a route too. Testing against the
+  // fast/smart pair sent 'vision' down the provider-id branch, where it resolved
+  // to nothing and then crashed on the line below.
+  const isRoute = tierOrId == null || providers.ROUTE_TIERS.includes(tierOrId);
+  const p = isRoute
     ? providers.resolveTier(settings, tierOrId)
     : providers.resolve(settings, tierOrId);
 
   if (!p) {
-    return { ready: false, reason: 'Unknown provider.', provider: providerId, model: null, vision: false };
+    return {
+      ready: false,
+      reason: isRoute
+        ? 'No provider is configured for the ' + (tierOrId || 'active') + ' route.'
+        : 'Unknown provider "' + tierOrId + '".',
+      provider: isRoute ? null : tierOrId,
+      label: tierOrId || 'unset',
+      model: null,
+      vision: false,
+      // `stream` must exist even on an unusable instance: callers check `ready`,
+      // but a mistake there should surface as the reason, not as
+      // "activeLLM.stream is not a function".
+      async stream() { throw new Error('This route is not configured.'); }
+    };
   }
 
   return {
@@ -222,7 +336,7 @@ function createLLM(settings, tierOrId) {
     ready: p.ready,
     reason: p.reason,
 
-    async stream({ system, turns, imageDataUrl, onToken, signal, maxTokens = 4096, onNotice }) {
+    async stream({ system, turns, imageDataUrl, onToken, onReasoning, signal, maxTokens = 4096, onNotice }) {
       const transport = TRANSPORTS[p.kind];
       if (!transport) throw new Error('No transport for provider kind "' + p.kind + '".');
 
@@ -239,10 +353,25 @@ function createLLM(settings, tierOrId) {
         imageDataUrl: img,
         maxTokens,
         onToken,
+        onReasoning,
+        onNotice,
         signal
       });
 
       const isAbort = (e) => e && (e.name === 'AbortError' || e.message === 'Request was aborted.');
+
+      /**
+       * Re-wrapping loses the flags the caller branches on. `emptyAnswer` in
+       * particular is the difference between "this provider is broken" and
+       * "this provider works, raise the reply length" -- the connection test
+       * reported the second case as a hard failure until this carried it.
+       */
+      const rethrow = (e) => {
+        const out = new Error(explain(e, p));
+        if (e && e.emptyAnswer) out.emptyAnswer = true;
+        if (e && e.status) out.status = e.status;
+        throw out;
+      };
 
       try {
         return await run(image);
@@ -275,14 +404,112 @@ function createLLM(settings, tierOrId) {
             return out;
           } catch (retryErr) {
             if (isAbort(retryErr)) { const e = new Error('aborted'); e.aborted = true; throw e; }
-            throw new Error(explain(retryErr, p));
+            rethrow(retryErr);
           }
         }
 
-        throw new Error(explain(err, p));
+        rethrow(err);
       }
     }
   };
 }
 
-module.exports = { createLLM };
+/**
+ * End-to-end connection test for one provider.
+ *
+ * "Refresh model list" only proves the endpoint answers a GET. It does not
+ * prove the key can generate, that the model NAME is right, or that the model
+ * is loaded -- which is where connecting a provider actually goes wrong. This
+ * does the whole round trip and names the step that failed.
+ *
+ * A model that thinks past its budget is reported as a WARNING, not a failure:
+ * the connection is provably fine, the reply length is what needs raising.
+ */
+async function testConnection(settings, id, { maxTokens = 512 } = {}) {
+  /**
+   * Which model to test with.
+   *
+   * A provider's own fast/smart fields are the first choice, but they are not
+   * the only place a model is chosen: the routing UI writes to settings.routes,
+   * so a perfectly configured provider whose model was picked there would
+   * otherwise be told to "pick a model first" -- a false failure on the exact
+   * screen meant to end guesswork.
+   */
+  const direct = providers.resolve(settings, id);
+  if (!direct) return { ok: false, level: 'error', message: 'Unknown provider.' };
+
+  let p = direct;
+  if (!p.model) {
+    const routes = settings.routes || {};
+    const tier = providers.ROUTE_TIERS.find((t) => {
+      const r = routes[t];
+      return r && r.provider === id && (r.model || '').trim();
+    });
+    if (tier) {
+      const model = routes[tier].model.trim();
+      const models = Object.assign({}, settings.models);
+      models[id] = Object.assign({}, models[id], { fast: model, smart: model });
+      settings = Object.assign({}, settings, { models, smart: false });
+      p = providers.resolve(settings, id);
+    }
+  }
+  if (!p.model) {
+    return { ok: false, level: 'error', message: 'Pick a model for ' + p.label + ' first.' };
+  }
+  if (p.needsKey && !p.hasKey) {
+    return { ok: false, level: 'error', message: 'Add an API key for ' + p.label + '.' };
+  }
+
+  let listed = null;
+  if (p.kind === providers.OPENAI_COMPATIBLE) {
+    const d = await providers.discoverModels(settings, id);
+    if (!d.ok) return { ok: false, level: 'error', message: d.error };
+    listed = d.models;
+    // Catch the single most common connection mistake -- a model name that the
+    // server has never heard of -- before spending a generation on it.
+    if (listed.length && !listed.some((m) => m.id === p.model)) {
+      return {
+        ok: false,
+        level: 'error',
+        message: 'Reachable, key accepted, but "' + p.model + '" is not on this server. '
+          + listed.length + ' models are: ' + listed.slice(0, 3).map((m) => m.id).join(', ')
+          + (listed.length > 3 ? ', …' : '') + '.'
+      };
+    }
+  }
+
+  const llm = createLLM(settings, id);
+  const t0 = Date.now();
+  let firstTokenMs = null;
+  try {
+    const out = await llm.stream({
+      system: 'Reply with the single word OK and nothing else.',
+      turns: [{ role: 'user', text: 'Connection test.' }],
+      maxTokens,
+      onToken: () => { if (firstTokenMs == null) firstTokenMs = Date.now() - t0; }
+    });
+    const ms = Date.now() - t0;
+    return {
+      ok: true,
+      level: 'ok',
+      latencyMs: ms,
+      firstTokenMs,
+      models: listed ? listed.length : null,
+      message: 'Connected. ' + p.label + ' / ' + p.model + ' replied '
+        + JSON.stringify(out.trim().slice(0, 24)) + ' in ' + ms + 'ms'
+        + (firstTokenMs != null ? ' (' + firstTokenMs + 'ms to first token)' : '') + '.'
+    };
+  } catch (e) {
+    if (e && e.emptyAnswer) {
+      return {
+        ok: true,
+        level: 'warn',
+        models: listed ? listed.length : null,
+        message: 'Connected, but ' + e.message
+      };
+    }
+    return { ok: false, level: 'error', message: (e && e.message) || String(e) };
+  }
+}
+
+module.exports = { createLLM, testConnection };
