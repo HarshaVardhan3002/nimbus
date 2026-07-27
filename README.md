@@ -28,6 +28,7 @@ It is designed around two ideas:
 - [Code deep dive](#code-deep-dive)
 - [Project map](#project-map)
 - [Known limitations](#known-limitations)
+- [Roadmap](#roadmap)
 
 ## In action
 
@@ -343,6 +344,17 @@ ARCHITECTURE.md             Detailed engineering notes and measured behavior
 - Screen capture depends on the selected route being truly vision-capable. Nimbus has safeguards and a text-only retry, but provider capability metadata can be incomplete.
 - Device control and agentic actions are not implemented; Nimbus can read screen/audio context but does not operate other applications.
 - Speaker-verification primitives exist in `src/audio/speaker.js`, but identity-based routing is not currently wired into the live transcript pipeline.
+
+## Roadmap
+
+Planned directions, not commitments or dated releases. Ordering may change.
+
+- **macOS support.** The native layer (window clipping, DWM acrylic, capture exclusion, display affinity) is Win32-specific today. macOS needs an equivalent path built on `NSWindow` shaping, vibrancy, and the platform's own capture-exclusion behavior, plus a signed and notarized build.
+- **UI/UX refinements.** Continued work on the panel: layout density, keyboard-only operation, clearer streaming and error states, and settings that explain the consequence of each option rather than only naming it.
+- **Seamless STT and TTS.** Lower-latency speech in, and spoken answers out. The goal is a conversation that does not wait on a full utterance boundary: streaming partial transcripts, a neural VAD in place of the current energy VAD, true always-on keyword spotting, and an optional local TTS voice so answers can be heard instead of read.
+- **Harness connection.** A supported way to attach Nimbus to an external agent or automation harness, so the overlay can act as the human-facing surface for a longer-running process instead of only answering single prompts.
+- **Rust porting.** Move latency- and safety-sensitive parts out of Node: audio segmentation, native window control, and screen capture are the first candidates. The aim is lower overhead and fewer native bindings, exposed to the existing UI rather than replacing it wholesale.
+- **Privacy and quality-of-life enhancements.** Encrypted local credential storage instead of plaintext in `nimbus-data.json`, per-provider data-egress indicators, redaction before a screenshot leaves the machine, history retention rules, and per-session provider overrides.
 
 ## Contributing
 
