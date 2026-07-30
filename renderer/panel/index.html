@@ -122,21 +122,6 @@
             <span>API key</span>
             <input id="f-key" type="password" spellcheck="false" autocomplete="off" />
           </div>
-          <div class="s-row">
-            <span>Display name</span>
-            <input id="f-label" type="text" spellcheck="false" placeholder="e.g. Lemonade box" />
-          </div>
-          <div id="custom-opts">
-            <label class="s-check">
-              <input id="f-needskey" type="checkbox" />
-              <span>This endpoint requires an API key <em>(vLLM --api-key, OpenRouter, Groq, an authenticated remote server)</em></span>
-            </label>
-            <label class="s-check">
-              <input id="f-local" type="checkbox" />
-              <span>Runs on this machine or LAN <em>(enables keep-warm pings and local error hints)</em></span>
-            </label>
-          </div>
-
           <div class="s-label">Models</div>
           <div class="s-row">
             <span>Fast</span>
@@ -151,10 +136,6 @@
             <button id="refresh-models" class="ghost-btn small"><span class="ic"></span><span>Refresh model list</span></button>
             <span id="discover-status" class="s-hint"></span>
           </div>
-          <label class="s-check">
-            <input id="f-vision" type="checkbox" />
-            <span>Model can see images <em>(needed for screen questions)</em></span>
-          </label>
           <div class="s-hint" id="model-meta"></div>
 
           <!--
@@ -166,6 +147,37 @@
           <div class="s-row inline">
             <button id="test-provider" class="ghost-btn small"><span class="ic"></span><span>Test connection</span></button>
             <span id="test-status" class="s-hint"></span>
+          </div>
+
+          <!--
+            Everything below is an override for something Nimbus already worked
+            out on its own: the display name, whether the endpoint wants a key,
+            whether it is local, and whether the model can see. Showing all four
+            by default put eleven controls on screen to configure what is
+            usually two, so they are disclosed rather than displayed.
+          -->
+          <button id="provider-more" class="disclosure" aria-expanded="false" aria-controls="provider-advanced">
+            <span class="ic"></span><span>Advanced</span>
+          </button>
+          <div id="provider-advanced" class="hidden">
+            <div class="s-row">
+              <span>Display name</span>
+              <input id="f-label" type="text" spellcheck="false" placeholder="e.g. Lemonade box" />
+            </div>
+            <div id="custom-opts">
+              <label class="s-check">
+                <input id="f-needskey" type="checkbox" />
+                <span>This endpoint requires an API key <em>(vLLM --api-key, OpenRouter, Groq, an authenticated remote server)</em></span>
+              </label>
+              <label class="s-check">
+                <input id="f-local" type="checkbox" />
+                <span>Runs on this machine or LAN <em>(enables keep-warm pings and local error hints)</em></span>
+              </label>
+            </div>
+            <label class="s-check">
+              <input id="f-vision" type="checkbox" />
+              <span>Model can see images <em>(needed for screen questions)</em></span>
+            </label>
           </div>
         </div>
 

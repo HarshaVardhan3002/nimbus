@@ -438,6 +438,28 @@ body { width: 100%; }
 .ghost-btn:hover { border-color: var(--accent); color: var(--tx-1); border-style: solid; }
 .ghost-btn.small { padding: 5px 9px; font-size: 11.5px; border-style: solid; }
 
+/*
+ * Disclosure control. Deliberately quieter than .ghost-btn: it reveals
+ * overrides for things Nimbus already worked out, so it must not compete with
+ * the controls it hides. No border and no fill -- a label and a chevron.
+ */
+.disclosure {
+  display: inline-flex; align-items: center; gap: 5px;
+  margin-top: 12px;
+  padding: 4px 0;
+  background: none;
+  border: 0;
+  color: var(--tx-dim);
+  font-size: 11.5px;
+  font-weight: 500;
+}
+.disclosure:hover { color: var(--tx-1); }
+.disclosure .ic {
+  display: inline-flex;
+  transition: transform var(--t-fast) var(--ease-std);
+}
+.disclosure[aria-expanded="true"] .ic { transform: rotate(90deg); }
+
 .primary-btn {
   padding: 7px 16px;
   border-radius: var(--r-ctl);

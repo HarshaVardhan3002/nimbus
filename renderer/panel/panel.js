@@ -18,6 +18,9 @@
   let settings = null;
   let providerList = [];
   let editingProvider = null;
+  // Which provider the Advanced block's open/closed state was last decided for.
+  // Tracked so a manual collapse survives re-renders of the same provider.
+  let advancedFor = null;
   let lastDiscovery = { models: [], classified: false };
   // 'hold' | 'latch' | 'unbound', from native:status. Decides whether the
   // push-to-talk row can honestly call itself hold-to-talk.
@@ -48,6 +51,7 @@
   $('#test-provider .ic').innerHTML = icon('zap', { size: 12 });
   $('#refresh-stt .ic').innerHTML = icon('mic', { size: 12 });
   $('#ptt-reset .ic').innerHTML = icon('refresh-cw', { size: 12 });
+  $('#provider-more .ic').innerHTML = icon('chevron-right', { size: 13 });
 
   // ---- viewport-independent layout caps ------------------------------------
   function applyAvailableHeight(h) {
@@ -602,6 +606,12 @@
 
       // needsKey/local are properties of a custom entry, not of a built-in.
       $('#custom-opts').classList.toggle('hidden', !p.custom);
+      // A custom endpoint is *defined* by the two flags inside Advanced, so
+      // selecting one opens it. Built-ins already know their own answers.
+      if (advancedFor !== p.id) {
+        advancedFor = p.id;
+        setProviderAdvanced(!!p.custom);
+      }
       const cust = (settings.customProviders || []).find((c) => c.id === p.id);
       $('#f-needskey').checked = cust ? cust.needsKey !== false : !!p.needsKey;
       $('#f-local').checked = cust ? cust.local !== false : !!p.local;
@@ -759,6 +769,23 @@
     $(sel).addEventListener('blur', persistProvider);
   });
   $('#f-vision').addEventListener('change', persistProvider);
+
+  /**
+   * The Advanced block is collapsed by default. Toggling it resizes the panel,
+   * so the window has to be told; nothing else observes this subtree.
+   */
+  function setProviderAdvanced(open) {
+    // aria-expanded is the single source of truth: the chevron rotation is
+    // driven off it in CSS, so there is no second flag to keep in sync.
+    $('#provider-advanced').classList.toggle('hidden', !open);
+    $('#provider-more').setAttribute('aria-expanded', String(!!open));
+    reportSize();
+  }
+
+  $('#provider-more').addEventListener('click', () => {
+    setProviderAdvanced($('#provider-advanced').classList.contains('hidden'));
+  });
+
   $('#f-needskey').addEventListener('change', async () => {
     await persistProvider();
     renderSettings(); // placeholder text and readiness both depend on it
