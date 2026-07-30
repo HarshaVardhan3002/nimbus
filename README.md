@@ -147,6 +147,23 @@ POST http://127.0.0.1:8000/v1/audio/transcriptions
 
 Point Settings at a compatible local server such as faster-whisper-server, whisper.cpp server, Speaches, or LM Studio, and provide the server's model identifier. Alternatively choose OpenAI Whisper or Gemini in Settings after configuring the respective API key. Set transcription to **Off** if you only want typed and screen-based interactions.
 
+### Choose what Nimbus hears
+
+Settings › Voice › **Audio sources** controls the two capture channels independently. They are not symmetric, because they are not used for the same thing.
+
+| Setting | Default | Effect |
+| --- | --- | --- |
+| System audio | On | Whatever is playing on this PC — a video, a call, a stream — is captured through Windows loopback and transcribed. No virtual audio cable needed. Turn it off to stop system capture entirely. |
+| Microphone › **Push to talk** | Default | The microphone device is opened but stays muted. Audio only reaches transcription while you hold the talk key or hold the pill's talk button. |
+| Microphone › Always on | — | The microphone is transcribed for as long as Nimbus is listening. This was the old behaviour. |
+| Microphone › Off | — | `getUserMedia` is never called. No microphone device is opened at all. |
+
+The default is push to talk so that the common case — "transcribe or translate what I am watching" — captures the video and not the room you are watching it in. Play a YouTube video, press <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>L</kbd>, and the transcript fills from the audio; ask a question about it by typing, or hold <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>Space</kbd> and say it. Set the target language in Settings › Voice › Transcription and the panel's **Translate** action turns the captured audio into it.
+
+The talk chord is rebindable in the same section: click the field and press the combination you want, including a bare modifier such as right <kbd>Alt</kbd>. Hold-to-talk needs the native layer for key-up detection; without it the chord falls back to press-to-open / press-again-to-close, and the settings screen states which one is active rather than mislabelling it.
+
+While the microphone is open the pill's talk button and its waveform turn amber, distinct from the green that means "listening". Amber means the model is hearing you.
+
 ## Use Nimbus
 
 | Shortcut | Action |
@@ -155,6 +172,7 @@ Point Settings at a compatible local server such as faster-whisper-server, whisp
 | <kbd>Ctrl</kbd>+<kbd>H</kbd> | Solve the coding problem on screen |
 | <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Space</kbd> | Open or close the chat panel |
 | <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>L</kbd> | Request listening mode |
+| <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>Space</kbd> | **Hold** to open the microphone (push to talk) |
 | <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>Q</kbd> | Quit Nimbus |
 
 The panel also provides actions for an on-screen answer, live-conversation reply suggestions, follow-up questions, recaps, and translation. Typed questions and explicit screen questions preserve conversation context; one-shot actions intentionally operate on the current screen or transcript instead of old chat history.
@@ -170,6 +188,7 @@ A typed question does not capture the screen. Sending the display to a provider 
 - **Reply-length ceiling:** a per-answer token cap in Settings › Privacy, so a verbose or reasoning-heavy model cannot run away with the budget.
 - **Independent provider routing:** local and cloud endpoints can coexist, with separate Fast, Smart, and Vision assignments.
 - **Audio pipeline:** microphone and Windows loopback audio are segmented in an AudioWorklet using adaptive energy VAD, pre-roll, and a silence hangover before transcription.
+- **Push-to-talk microphone:** system audio is the default listening source; the microphone opens only while a rebindable chord or the pill's talk button is held. The gate is applied inside the audio worklet, so muted frames are discarded on the audio thread rather than buffered and filtered later, and the main process enforces the same rule again at the transcription intake. The microphone can also be set to always-on or switched off so the device is never opened.
 - **Conversation history:** sessions and a searchable index are stored locally, with a configurable number of earlier turns supplied as model context.
 - **Model warming:** local active models can receive a minimal keep-warm request to reduce cold-start latency.
 - **Capture privacy control:** an opt-in Windows display-affinity mode asks the compositor to exclude Nimbus from supported screen captures and reports whether the OS confirmed it for both windows.
@@ -250,7 +269,14 @@ ipcMain.handle('settings:get', () => store.getSettings());
 ipcMain.handle('providers:list', () => providers.list(store.getSettings()));
 ipcMain.on('ask', (_event, payload) => runFeature(payload?.mode, payload?.text));
 ipcMain.on('audio:utterance', (_event, meta, buffer) => {
-  if (state.listening && buffer) enqueueUtterance(meta?.channel || 'you', Buffer.from(buffer));
+  if (!state.listening || !buffer) return;
+  const channel = meta?.channel || 'you';
+  // Second gate. The worklet already dropped muted mic frames; this is the
+  // backstop, with a grace window because the VAD emits an utterance when the
+  // speaker stops, which is often just after the talk key is released.
+  if (channel === 'you' && !state.micOpen
+      && Date.now() - state.micClosedAt > MIC_RELEASE_GRACE_MS) return;
+  enqueueUtterance(channel, Buffer.from(buffer));
 });
 ```
 
@@ -349,6 +375,7 @@ src/llm.js                  Provider transports and streamed LLM requests
 src/stt.js                  Independent STT factory and fallbacks
 src/screen.js               Main-process screenshot capture
 src/store.js                Versioned local settings persistence
+src/pushtotalk.js           Hold-to-talk chord polling, with a latch fallback
 src/history.js              Local conversation-session persistence and search
 src/windows/manager.js      Two-window topology, sizing, dragging, clipping
 src/native/win32.js         Win32/DWM FFI with safe fallbacks
@@ -363,7 +390,10 @@ ARCHITECTURE.md             Detailed engineering notes and measured behavior
 - The app is Windows-first; macOS and Linux are not supported release targets.
 - Local STT requires a separately running compatible server. Nimbus does not download or host a Whisper model itself.
 - The VAD is energy-based, not a neural voice activity detector. It can still react to loud non-speech audio.
-- Wake-word matching happens after transcription, so it is not an instant keyword spotter.
+- Wake-word matching happens after transcription, so it is not an instant keyword spotter. It also only matches the microphone channel, so with the microphone on push to talk it fires only while the talk key is held.
+- Hold-to-talk needs the Win32 layer for key-up detection. Without it the chord becomes a press/press-again latch; `native:status` reports which one is active.
+- The talk chord is observed, not claimed, so binding a combination another application already uses will trigger that application as well.
+- Push-to-talk holds the microphone device open for the whole listening session so the first word is not clipped, which means the Windows microphone-in-use indicator stays lit even while the mic is muted. Set the microphone to **Off** if the device must not be opened at all.
 - Screen capture depends on the selected route being truly vision-capable. Nimbus has safeguards and a text-only retry, but provider capability metadata can be incomplete.
 - Device control and agentic actions are not implemented; Nimbus can read screen/audio context but does not operate other applications.
 - Speaker-verification primitives exist in `src/audio/speaker.js`, but identity-based routing is not currently wired into the live transcript pipeline.

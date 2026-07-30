@@ -337,6 +337,16 @@ body { width: 100%; }
 .s-row input:focus, .s-row select:focus { border-color: var(--accent); }
 .s-row input[type="range"] { flex: 1; accent-color: var(--accent); }
 
+/* Chord capture. The field is armed and waiting for a key combination, which is
+   a different state from "focused and ready for text" and has to look like it,
+   or the user types a letter into it and wonders why nothing was saved. */
+#f-ptt-key { font-family: var(--mono); font-size: 11.5px; cursor: pointer; }
+#f-ptt-key.capturing {
+  border-color: var(--warn);
+  color: var(--warn);
+  font-family: var(--font);
+}
+
 .s-check {
   display: flex; align-items: flex-start; gap: 8px;
   font-size: 12.5px; color: var(--tx-2);

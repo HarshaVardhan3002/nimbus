@@ -19,6 +19,7 @@ const INBOUND = [
   'transcript',
   'settings:changed',
   'listen:request',
+  'mic:gate',
   'panel:focus-input',
   'open-settings',
   'display:changed',
@@ -71,6 +72,11 @@ contextBridge.exposeInMainWorld('nimbus', {
    */
   utterance: (meta, buffer) => ipcRenderer.send('audio:utterance', meta, buffer),
   listenState: (active) => ipcRenderer.send('listen:state', active),
+  /**
+   * The pill's talk button, held. Merged in main with the global hold-to-talk
+   * key so the mic gate has one owner and one answer.
+   */
+  micHold: (on) => ipcRenderer.send('mic:hold', !!on),
 
   // ---- window ----
   pillSize: (w, h) => ipcRenderer.send('ui:pill-size', { w, h }),

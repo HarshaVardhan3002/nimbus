@@ -82,6 +82,7 @@ let DeleteObject = null;
 let CreateRectRgn = null;
 let SetWindowDisplayAffinity = null;
 let GetWindowDisplayAffinity = null;
+let GetAsyncKeyState = null;
 
 let available = false;
 let loadError = null;
@@ -182,6 +183,11 @@ function init() {
       '__stdcall', 'GetWindowDisplayAffinity', 'bool',
       ['uintptr_t', koffi.out(koffi.pointer('uint32'))]
     );
+
+    // Hold-to-talk polls the live state of the bound chord. See src/pushtotalk.js
+    // for why this is a poll of specific virtual keys and not a WH_KEYBOARD_LL
+    // hook.
+    GetAsyncKeyState = user32.func('__stdcall', 'GetAsyncKeyState', 'int16', ['int']);
 
     available = true;
     return true;
@@ -434,6 +440,28 @@ function getCaptureProtection(win) {
   }
 }
 
+/**
+ * Is this virtual key physically down right now?
+ *
+ * The whole of hold-to-talk rests on this one call. Electron's globalShortcut is
+ * press-only -- it has no key-up event -- so "the mic is open while the key is
+ * held" cannot be expressed with it at all.
+ */
+function keyDown(vk) {
+  if (!available || !GetAsyncKeyState) return false;
+  try {
+    /**
+     * Bit 15 is "currently down". Bit 0 is "pressed since the last call to this
+     * function", which is a ONE-SHOT that clears on read -- polling on bit 0
+     * makes a held key read as released on the very next tick, which is the
+     * exact failure this feature cannot have.
+     */
+    return (GetAsyncKeyState(vk) & 0x8000) !== 0;
+  } catch {
+    return false;
+  }
+}
+
 function status() {
   return { available, error: loadError, platform: process.platform, release: os.release() };
 }
@@ -443,6 +471,7 @@ module.exports = {
   WDA_NONE, WDA_MONITOR, WDA_EXCLUDEFROMCAPTURE,
   setCaptureProtection, getCaptureProtection,
   setCornerPreference,
+  keyDown,
   available: () => available,
   status,
   enableAcrylic,

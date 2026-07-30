@@ -19,6 +19,9 @@
   let providerList = [];
   let editingProvider = null;
   let lastDiscovery = { models: [], classified: false };
+  // 'hold' | 'latch' | 'unbound', from native:status. Decides whether the
+  // push-to-talk row can honestly call itself hold-to-talk.
+  let pttMode = 'hold';
   let busy = false;
   let aiEl = null;
   let caretEl = null;
@@ -44,6 +47,7 @@
   $('#refresh-models .ic').innerHTML = icon('refresh-cw', { size: 12 });
   $('#test-provider .ic').innerHTML = icon('zap', { size: 12 });
   $('#refresh-stt .ic').innerHTML = icon('mic', { size: 12 });
+  $('#ptt-reset .ic').innerHTML = icon('refresh-cw', { size: 12 });
 
   // ---- viewport-independent layout caps ------------------------------------
   function applyAvailableHeight(h) {
@@ -615,9 +619,14 @@
     $('#f-stt').value = stt.provider || 'local';
     $('#f-stt-url').value = stt.localBaseURL || '';
     $('#f-stt-model').value = stt.provider === 'local' ? (stt.localModel || '') : (stt.remoteModel || '');
+    $('#f-target-lang').value = stt.targetLang || 'English';
     syncSttRows();
 
     const a = settings.audio || {};
+    $('#f-system-audio').checked = a.captureSystem !== false;
+    $('#f-mic-mode').value = a.micMode || 'ptt';
+    $('#f-ptt-key').value = ((settings.shortcuts || {}).talk) || 'Control+Alt+Space';
+    syncSourceRows();
     $('#f-vad').value = Math.round((a.vadThreshold || 0.010) * 1000);
     $('#vad-val').textContent = describeSensitivity(a.vadThreshold || 0.010);
     $('#f-hangover').value = a.silenceHangoverMs || 550;
@@ -665,6 +674,43 @@
     const mode = $('#f-stt').value;
     $('#row-stt-url').classList.toggle('hidden', mode !== 'local');
     $('#row-stt-model').classList.toggle('hidden', mode === 'off' || mode === 'gemini');
+    $('#row-target-lang').classList.toggle('hidden', mode === 'off');
+    reportSize();
+  }
+
+  /**
+   * Say what the current combination of sources actually means.
+   *
+   * The interesting states are the ones the user did not intend: both sources
+   * off (Nimbus can hear nothing at all and listening will refuse to start), and
+   * a chord bound where the native layer cannot give a key-up, which silently
+   * turns hold-to-talk into press-to-toggle.
+   */
+  function syncSourceRows() {
+    const mode = $('#f-mic-mode').value;
+    const sys = $('#f-system-audio').checked;
+    $('#row-ptt').classList.toggle('hidden', mode !== 'ptt');
+
+    let hint;
+    if (!sys && mode === 'off') {
+      hint = 'Nothing is being captured. Listening will not start until one source is on.';
+    } else if (mode === 'ptt') {
+      hint = sys
+        ? 'Nimbus transcribes what is playing on this PC. Your microphone is silent until you hold the key.'
+        : 'Only your microphone, and only while the key is held.';
+      if (pttMode === 'latch') {
+        hint += ' Key-up is unavailable on this build, so the key toggles the mic instead of holding it.';
+      } else if (pttMode === 'unbound') {
+        hint += ' This combination could not be bound -- pick another, or use the pill button.';
+      }
+    } else if (mode === 'always') {
+      hint = sys
+        ? 'Both the microphone and system audio are transcribed for as long as Nimbus is listening.'
+        : 'The microphone is transcribed for as long as Nimbus is listening.';
+    } else {
+      hint = 'The microphone device is never opened. System audio only.';
+    }
+    $('#mic-hint').textContent = hint;
     reportSize();
   }
 
@@ -879,6 +925,116 @@
     settings.stt = Object.assign({}, settings.stt, patch);
     await app.settingsSet({ stt: settings.stt });
   }));
+  $('#f-target-lang').addEventListener('blur', async () => {
+    const v = $('#f-target-lang').value.trim() || 'English';
+    $('#f-target-lang').value = v;
+    settings.stt = Object.assign({}, settings.stt, { targetLang: v });
+    await app.settingsSet({ stt: settings.stt });
+  });
+
+  // ---- audio sources -------------------------------------------------------
+  $('#f-system-audio').addEventListener('change', async () => {
+    settings.audio = Object.assign({}, settings.audio, { captureSystem: $('#f-system-audio').checked });
+    syncSourceRows();
+    await app.settingsSet({ audio: settings.audio });
+  });
+
+  $('#f-mic-mode').addEventListener('change', async () => {
+    settings.audio = Object.assign({}, settings.audio, { micMode: $('#f-mic-mode').value });
+    syncSourceRows();
+    await app.settingsSet({ audio: settings.audio });
+  });
+
+  /**
+   * Chord capture.
+   *
+   * The field is readonly and records the next key combination pressed rather
+   * than accepting typed text, because an accelerator the user typed by hand is
+   * a string that has to be validated, and one they pressed is by construction a
+   * chord they can press again.
+   */
+  let capturingChord = false;
+  function stopCapturingChord() {
+    capturingChord = false;
+    $('#f-ptt-key').classList.remove('capturing');
+    $('#f-ptt-key').value = ((settings.shortcuts || {}).talk) || 'Control+Alt+Space';
+  }
+
+  $('#f-ptt-key').addEventListener('focus', () => {
+    capturingChord = true;
+    $('#f-ptt-key').classList.add('capturing');
+    $('#f-ptt-key').value = 'Press the keys to hold…';
+  });
+  $('#f-ptt-key').addEventListener('blur', stopCapturingChord);
+
+  const MODIFIER_KEYS = ['Control', 'Alt', 'Shift', 'Meta'];
+
+  /**
+   * DOM KeyboardEvent.key -> Electron accelerator name.
+   *
+   * Not cosmetic: src/pushtotalk.js parses the saved string back into virtual
+   * key codes, and an unparseable chord leaves push-to-talk silently bound to
+   * nothing. 'ArrowUp' and ' ' are the two the browser spells differently from
+   * every accelerator convention.
+   */
+  const KEY_ALIAS = {
+    ' ': 'Space', ArrowUp: 'Up', ArrowDown: 'Down', ArrowLeft: 'Left', ArrowRight: 'Right',
+    Enter: 'Return', Esc: 'Escape', Del: 'Delete', Spacebar: 'Space'
+  };
+
+  function accelKeyName(key) {
+    if (KEY_ALIAS[key]) return KEY_ALIAS[key];
+    return key.length === 1 ? key.toUpperCase() : key;
+  }
+
+  async function saveTalkChord(accel) {
+    settings.shortcuts = Object.assign({}, settings.shortcuts, { talk: accel });
+    await app.settingsSet({ shortcuts: settings.shortcuts });
+    capturingChord = false;
+    $('#f-ptt-key').classList.remove('capturing');
+    $('#f-ptt-key').value = accel;
+    $('#f-ptt-key').blur();
+    // Main re-parses the chord on save, so ask it what the binding actually
+    // became rather than assuming it took. An unparseable chord comes back
+    // 'unbound' and the hint says so.
+    try {
+      const nat = await app.nativeStatus();
+      pttMode = (nat && nat.pushToTalk) || pttMode;
+    } catch { /* keep the previous answer */ }
+    syncSourceRows();
+  }
+
+  $('#f-ptt-key').addEventListener('keydown', async (e) => {
+    if (!capturingChord) return;
+    e.preventDefault();
+    if (e.key === 'Escape') { $('#f-ptt-key').blur(); return; }
+
+    const mods = [];
+    if (e.ctrlKey) mods.push('Control');
+    if (e.altKey) mods.push('Alt');
+    if (e.shiftKey) mods.push('Shift');
+    if (e.metaKey) mods.push('Super');
+
+    // A bare modifier is a legitimate hold-to-talk binding -- "hold right Alt"
+    // is a good one -- so it is accepted on RELEASE rather than waiting for a
+    // non-modifier key that may never come.
+    const bare = MODIFIER_KEYS.includes(e.key);
+    const accel = (bare ? mods : mods.concat([accelKeyName(e.key)])).join('+');
+    if (!accel) return;
+
+    $('#f-ptt-key').value = accel;
+    if (bare) return;             // keep capturing until a real key lands
+    await saveTalkChord(accel);
+  });
+
+  $('#f-ptt-key').addEventListener('keyup', async (e) => {
+    if (!capturingChord || !MODIFIER_KEYS.includes(e.key)) return;
+    const accel = $('#f-ptt-key').value;
+    if (!accel || accel.indexOf('…') >= 0) return;
+    await saveTalkChord(accel);
+  });
+
+  $('#ptt-reset').addEventListener('click', () => saveTalkChord('Control+Alt+Space'));
 
   $('#f-vad').addEventListener('input', async () => {
     const v = Number($('#f-vad').value) / 1000;
@@ -1101,6 +1257,9 @@
 
     const nat = await app.nativeStatus();
     applyGlassMode(nat && nat.glass, nat && nat.systemCorners);
+    // Decides whether the push-to-talk row is allowed to call itself "hold".
+    pttMode = (nat && nat.pushToTalk) || 'hold';
+    if (settings) syncSourceRows();
     if (!nat || !nat.available) {
       document.documentElement.classList.add('no-native');
       $('#native-status').textContent = 'Native glass unavailable: ' + ((nat && nat.error) || 'unknown') + '. Using the CSS fallback.';

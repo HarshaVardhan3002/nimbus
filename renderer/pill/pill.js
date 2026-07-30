@@ -17,6 +17,7 @@
   const message = $('#message');
   const waveBars = Array.from(document.querySelectorAll('.wave i'));
   const listenBtn = $('#listen-btn');
+  const talkBtn = $('#talk-btn');
   const toggleBtn = $('#toggle-btn');
   const menu = $('#menu');
 
@@ -25,6 +26,10 @@
   let capture = null;
   let speechTimer = null;
   let messageTimer = null;
+  let micOpen = false;
+
+  const micMode = () => ((settings && settings.audio && settings.audio.micMode) || 'ptt');
+  const talkAccel = () => ((settings && settings.shortcuts && settings.shortcuts.talk) || 'Control+Alt+Space');
 
   // ---- icons ---------------------------------------------------------------
   $('.mark-glyph').innerHTML = icon('logo', { size: 16 });
@@ -61,11 +66,46 @@
     document.body.classList.toggle('listening', on);
     listenBtn.classList.toggle('on', on);
     listenBtn.setAttribute('aria-pressed', String(on));
-    listenBtn.innerHTML = icon(on ? 'mic' : 'mic-off', { size: 15 });
-    listenBtn.title = on ? 'Stop listening  (Ctrl+Shift+L)' : 'Start listening  (Ctrl+Shift+L)';
+    /**
+     * The button shows the SOURCE, not a generic mic.
+     *
+     * With the mic on push-to-talk the thing being listened to is the speakers,
+     * and a mic glyph over that is a straightforward lie about what the app is
+     * hearing -- the one claim on this pill that must not be wrong.
+     */
+    const ambientIsMic = micMode() === 'always';
+    listenBtn.innerHTML = icon(
+      ambientIsMic ? (on ? 'mic' : 'mic-off') : (on ? 'volume-2' : 'volume-x'),
+      { size: 15 }
+    );
+    const src = ambientIsMic ? 'microphone' : 'system audio';
+    listenBtn.title = (on ? 'Stop listening to ' + src : 'Listen to ' + src) + '  (Ctrl+Shift+L)';
     $('#m-listen').querySelector('span:nth-child(2)').textContent = on ? 'Stop listening' : 'Start listening';
     if (!on) waveBars.forEach((b) => { b.style.height = '3px'; });
+    syncTalkButton();
     reportSize();
+  }
+
+  /**
+   * Push-to-talk affordance.
+   *
+   * Only exists while the mic is actually on push-to-talk AND Nimbus is
+   * listening: outside that it can do nothing, and a dead control on a pill this
+   * small costs more than it explains.
+   */
+  function syncTalkButton() {
+    const show = listening && micMode() === 'ptt';
+    talkBtn.classList.toggle('hidden', !show);
+    talkBtn.innerHTML = icon('mic', { size: 15 });
+    talkBtn.title = 'Hold to talk  (' + talkAccel().replace(/\+/g, ' + ') + ')';
+  }
+
+  function setMicOpen(on) {
+    micOpen = !!on;
+    document.body.classList.toggle('mic-open', micOpen);
+    talkBtn.classList.toggle('on', micOpen);
+    talkBtn.setAttribute('aria-pressed', String(micOpen));
+    if (capture) capture.setMicOpen(micOpen);
   }
 
   function setThinking(on) {
@@ -141,22 +181,51 @@
     if (!res.mic && !res.system) {
       setListening(false);
       say('No audio input', 4000);
-      app.status({ level: 'error', message: (res.errors || []).join(' ') || 'Could not open any audio input.' });
+      app.status({
+        level: 'error',
+        message: (res.errors || []).join(' ')
+          || 'Both audio sources are switched off. Turn on system audio or the microphone in Settings > Voice.'
+      });
       return;
     }
     if (res.errors && res.errors.length) app.status({ level: 'warn', message: res.errors.join(' ') });
     app.listenState(true);
+    say(res.system && micMode() !== 'always' ? 'Listening to system audio' : 'Listening', 2000);
   }
 
   function stopListening() {
     if (!listening) return;
     if (capture) capture.stop();
+    setMicOpen(false);
     setListening(false);
     app.listenState(false);
   }
 
   listenBtn.addEventListener('click', () => (listening ? stopListening() : startListening()));
   toggleBtn.addEventListener('click', () => app.togglePanel({ focus: true }));
+
+  /**
+   * Hold the button to talk.
+   *
+   * Reported to main rather than applied locally: main merges this with the
+   * global hold-to-talk key into one gate state and broadcasts the result, so
+   * there is exactly one answer to "is the mic open" and it is the same one that
+   * decides whether a 'you' utterance is accepted.
+   *
+   * pointer* events, not mouse*: pointerup fires even when the cursor has left
+   * the button, and pointercancel covers the window losing the pointer entirely.
+   * A mouseup missed on the way out would leave the mic open indefinitely.
+   */
+  talkBtn.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    e.stopPropagation();          // the pill drags on mousedown; talking is not dragging
+    try { talkBtn.setPointerCapture(e.pointerId); } catch { /* not fatal */ }
+    app.micHold(true);
+  });
+  const releaseTalk = () => app.micHold(false);
+  talkBtn.addEventListener('pointerup', releaseTalk);
+  talkBtn.addEventListener('pointercancel', releaseTalk);
+  window.addEventListener('blur', releaseTalk);
 
   // ---- events from main ----------------------------------------------------
   app.on('panel:state', ({ open }) => {
@@ -174,10 +243,30 @@
     else if (active) startListening(); else stopListening();
   });
 
-  app.on('settings:changed', (s) => {
+  app.on('mic:gate', ({ open }) => setMicOpen(open));
+
+  app.on('settings:changed', async (s) => {
+    const prev = settings;
     settings = s;
     applyTheme(s);
-    if (capture) capture.configure(s.audio || {});
+    if (!capture) return;
+    capture.configure(s.audio || {});
+
+    // Source changes take effect on the running session instead of demanding a
+    // stop/start: switching the mic mode mid-call is exactly when you need it.
+    const a = (s.audio || {});
+    const b = ((prev || {}).audio || {});
+    if (a.micMode !== b.micMode || a.captureSystem !== b.captureSystem) {
+      syncTalkButton();
+      const res = await capture.applySources(a);
+      if (res.errors.length) app.status({ level: 'warn', message: res.errors.join(' ') });
+      if (res.needsGesture && listening) {
+        // getDisplayMedia needs a user gesture and a settings save is not one.
+        say('Restart listening for system audio', 4200);
+        app.status({ level: 'info', message: 'System audio was switched on. Toggle listening off and on to grant it.' });
+      }
+      reportSize();
+    }
   });
 
   // Show what was heard, briefly. This is the one case where text earns its

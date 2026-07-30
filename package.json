@@ -1,6 +1,6 @@
 {
   "name": "nimbus",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Windows-native agentic overlay. Local-first, provider-agnostic, speaker-aware.",
   "license": "GPL-3.0-or-later",
   "author": "Harsha",

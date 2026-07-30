@@ -40,6 +40,17 @@ class VadProcessor extends AudioWorkletProcessor {
     this.preRollFrames = Math.round((o.preRollMs || 300) / 20);
     this.channel = o.channel || 'you';
 
+    /**
+     * Gate. When closed, audio reaching this processor is discarded on the audio
+     * thread and never becomes an utterance, a level or a pre-roll frame.
+     *
+     * This is what push-to-talk is enforced by. Gating here rather than in the
+     * page means there is no window in which mic audio sits buffered somewhere
+     * waiting to be dropped by a later check -- a closed gate is a frame that
+     * was thrown away the moment it arrived.
+     */
+    this.open = o.open !== false;
+
     this.acc = new Float32Array(FRAME);
     this.accLen = 0;
 
@@ -64,8 +75,37 @@ class VadProcessor extends AudioWorkletProcessor {
         if (typeof d.silenceHangoverMs === 'number') this.hangoverFrames = Math.round(d.silenceHangoverMs / 20);
       } else if (d.type === 'flush') {
         this._endUtterance(true);
+      } else if (d.type === 'gate') {
+        this._gate(d.open !== false, d.flush !== false);
       }
     };
+  }
+
+  /**
+   * Open or close the gate.
+   *
+   * Closing FLUSHES by default, and that is not an optimisation. The user lets
+   * go of the talk key when they have finished the sentence, so at the instant
+   * the gate closes the buffer holds exactly the words they held the key to say.
+   * Dropping it would lose the last utterance of every single turn.
+   */
+  _gate(open, flush) {
+    if (open === this.open) return;
+    this.open = open;
+    if (!open) {
+      if (flush) this._endUtterance(true);
+      this._reset();
+    }
+    this._emit('gate', { open });
+  }
+
+  _reset() {
+    this.utterance = [];
+    this.preRoll = [];
+    this.speaking = false;
+    this.silenceRun = 0;
+    this.voicedFrames = 0;
+    this.totalFrames = 0;
   }
 
   _toInt16(f32) {
@@ -190,6 +230,11 @@ class VadProcessor extends AudioWorkletProcessor {
   process(inputs) {
     const ch = inputs[0] && inputs[0][0];
     if (!ch || ch.length === 0) return true;
+
+    // Gate closed: the block is dropped before it is measured, converted or
+    // buffered anywhere. accLen is cleared so a half-filled frame from before
+    // the close cannot be completed by audio from after the reopen.
+    if (!this.open) { this.accLen = 0; return true; }
 
     let i = 0;
     while (i < ch.length) {

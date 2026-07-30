@@ -17,6 +17,7 @@ const { createSTT } = require('./src/stt');
 const { createLLM, testConnection } = require('./src/llm');
 const { MODES } = require('./src/prompts');
 const { WarmthKeeper } = require('./src/warmth');
+const { PushToTalk } = require('./src/pushtotalk');
 const history = require('./src/history');
 
 const DEV = !!process.env.CUE_DEV;
@@ -28,14 +29,32 @@ if (!app.requestSingleInstanceLock()) { app.quit(); process.exit(0); }
 
 let wm = null;
 let warmth = null;
+let ptt = null;
 let convo = null;     // the conversation currently on screen (Electron owns `session`)
 
 const state = {
   listening: false,
   busy: false,
   sttFailures: 0,
-  sttMuted: false      // set after repeated failures so we stop spamming notices
+  sttMuted: false,     // set after repeated failures so we stop spamming notices
+
+  // ---- microphone gate ----
+  micOpen: false,      // the merged answer: is the mic feeding the model right now
+  micClosedAt: 0,      // when it last closed, for the release grace window
+  keyHeld: false,      // the global hold-to-talk chord
+  buttonHeld: false    // the pill's talk button
 };
+
+/**
+ * How long after the talk key is released a 'you' utterance is still accepted.
+ *
+ * The VAD emits an utterance when the speaker STOPS, and a user lets go of the
+ * key at roughly the same moment -- often a few hundred ms earlier, because the
+ * hangover has not elapsed yet. Without this window the last sentence of every
+ * push-to-talk turn would be transcribed and then thrown away by the very guard
+ * meant to protect it.
+ */
+const MIC_RELEASE_GRACE_MS = 2500;
 
 const transcript = [];        // { channel, text, ts }
 const MAX_TRANSCRIPT = 400;
@@ -47,6 +66,45 @@ let abortController = null;
 function broadcast(channel, data) { if (wm) wm.broadcast(channel, data); }
 function toPanel(channel, data) { if (wm) wm.sendToPanel(channel, data); }
 function notify(message, level) { broadcast('status', { message, level: level || 'info' }); }
+
+// ---------------------------------------------------------------- mic gate
+/**
+ * Who decides whether the microphone is feeding the model.
+ *
+ * Three inputs -- the configured mode, the global hold-to-talk chord, and the
+ * pill's talk button -- collapse to ONE boolean here, in the main process. The
+ * renderer applies it to the worklet and the STT intake enforces it, so the
+ * question "was the mic open when this audio was captured" has a single answer
+ * rather than two that can disagree.
+ */
+function micModeOf() {
+  return ((store.getSettings().audio || {}).micMode) || 'ptt';
+}
+
+function updateMicGate() {
+  const mode = micModeOf();
+  const want = state.listening && (
+    mode === 'always' ? true
+      : mode === 'off' ? false
+        : (state.keyHeld || state.buttonHeld)
+  );
+  if (want === state.micOpen) return;
+  state.micOpen = want;
+  if (!want) state.micClosedAt = Date.now();
+  broadcast('mic:gate', { open: want, mode });
+  log('mic gate', want ? 'open' : 'closed', '(' + mode + ')');
+}
+
+/** Bring the hold-to-talk poller in line with the current settings. */
+function syncPushToTalk() {
+  if (!ptt) return;
+  const s = store.getSettings();
+  ptt.bind((s.shortcuts || {}).talk || 'Control+Alt+Space');
+  // Poll only when it could matter: listening, and the mic on push-to-talk.
+  if (state.listening && micModeOf() === 'ptt') ptt.start();
+  else ptt.stop();
+  updateMicGate();
+}
 
 // ---------------------------------------------------------------- STT
 /**
@@ -286,6 +344,9 @@ function registerIPC() {
     // fixed the thing that was failing.
     state.sttFailures = 0;
     state.sttMuted = false;
+    // The mic mode and the talk chord both live in settings, so every save is a
+    // chance that the gate's inputs just changed underneath it.
+    syncPushToTalk();
     broadcast('settings:changed', next);
     return next;
   });
@@ -457,7 +518,14 @@ function registerIPC() {
     // renderer has registered its listener, leaving the document without the
     // class that supplies its entire background.
     glass: wm ? wm.glassMode : 'shaped',
-    systemCorners: wm ? (wm.glassMode === 'acrylic' || wm.glassMode === 'blur') : false
+    systemCorners: wm ? (wm.glassMode === 'acrylic' || wm.glassMode === 'blur') : false,
+    /**
+     * 'hold' | 'latch' | 'unbound'. Reported because the two are genuinely
+     * different controls: without the native layer there is no key-up event to
+     * be had, and the chord becomes press-to-open / press-again-to-close. The
+     * settings screen says which one the user actually has.
+     */
+    pushToTalk: ptt ? ptt.mode : 'unbound'
   }));
   ipcMain.handle('display:info', () => ({
     availableHeight: wm ? wm.availableHeight() : 800,
@@ -469,7 +537,26 @@ function registerIPC() {
 
   ipcMain.on('audio:utterance', (_e, meta, buffer) => {
     if (!state.listening || !buffer) return;
-    enqueueUtterance((meta && meta.channel) || 'you', Buffer.from(buffer));
+    const channel = (meta && meta.channel) || 'you';
+
+    /**
+     * Second gate, deliberately redundant with the worklet's.
+     *
+     * The worklet already discards mic audio while the gate is closed, so this
+     * should never fire. It is here because "the mic was not open, therefore the
+     * model never heard it" is the promise the whole feature makes, and a
+     * promise enforced in one place is enforced until the next refactor moves
+     * that place.
+     */
+    if (channel === 'you' && !state.micOpen) {
+      const sinceRelease = Date.now() - state.micClosedAt;
+      if (sinceRelease > MIC_RELEASE_GRACE_MS) {
+        log('dropped mic utterance: gate closed', sinceRelease + 'ms ago');
+        return;
+      }
+    }
+
+    enqueueUtterance(channel, Buffer.from(buffer));
   });
 
   ipcMain.on('listen:state', (_e, active) => {
@@ -477,7 +564,18 @@ function registerIPC() {
     // A turn is now imminent; make sure the model is resident before the user
     // finishes their first sentence.
     if (active && warmth) warmth.poke();
-    if (!active) { state.sttFailures = 0; state.sttMuted = false; }
+    if (!active) {
+      state.sttFailures = 0;
+      state.sttMuted = false;
+      state.keyHeld = false;
+      state.buttonHeld = false;
+    }
+    syncPushToTalk();
+  });
+
+  ipcMain.on('mic:hold', (_e, on) => {
+    state.buttonHeld = !!on;
+    updateMicGate();
   });
 
   ipcMain.on('ui:pill-size', (_e, { w, h }) => { if (wm) wm.setPillSize(w, h); });
@@ -518,6 +616,12 @@ function registerShortcuts() {
     if (open) toPanel('panel:focus-input', {});
   });
   bind(s.listen || 'Control+Shift+L', () => broadcast('listen:request', {}));
+  /**
+   * `shortcuts.talk` is deliberately NOT bound here. Hold-to-talk needs key-up,
+   * which globalShortcut does not have, so src/pushtotalk.js owns that chord --
+   * either by polling GetAsyncKeyState or, with no native layer, by registering
+   * it itself as a latch. Binding it here as well would race that registration.
+   */
   // Fallback matches the store default. It used to be Control+Shift+X, which is
   // the accelerator store.js v3 deliberately migrated AWAY from because it is
   // commonly already taken -- so the fallback reintroduced the exact bug.
@@ -587,6 +691,11 @@ app.whenReady().then(() => {
   });
   if ((store.getSettings().warmth || {}).enabled !== false) warmth.start();
 
+  ptt = new PushToTalk({
+    onChange: (down) => { state.keyHeld = down; updateMicGate(); }
+  });
+  syncPushToTalk();
+
   registerShortcuts();
 
   // A resolution change, a DPI change or docking a laptop all invalidate the
@@ -606,6 +715,7 @@ app.whenReady().then(() => {
 
 app.on('will-quit', () => {
   if (warmth) warmth.stop();
+  if (ptt) ptt.stop();
   globalShortcut.unregisterAll();
   store.flush();          // debounced writes must not be lost on exit
   if (wm) wm.destroy();

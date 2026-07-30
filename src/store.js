@@ -45,7 +45,7 @@ function adoptLegacy() {
   }
 }
 
-const SCHEMA = 5;
+const SCHEMA = 6;
 
 const DEFAULTS = {
   schema: SCHEMA,
@@ -97,12 +97,37 @@ const DEFAULTS = {
     localBaseURL: 'http://127.0.0.1:8000/v1',
     localModel: 'Systran/faster-whisper-base.en',
     remoteModel: 'whisper-1',
-    language: 'en'
+    language: 'en',
+    /**
+     * Target for the Translate action. Read by MODES.translate; it had no
+     * default and no control, so translation silently always produced English
+     * however the transcript was configured.
+     */
+    targetLang: 'English'
   },
 
   audio: {
     listenOnLaunch: false,
+    /**
+     * Microphone policy. This is the privacy-load-bearing setting in the app.
+     *
+     *   'ptt'    — the mic is open ONLY while the hold-to-talk chord, or the
+     *              pill's talk button, is held. Default.
+     *   'always' — open for as long as Nimbus is listening.
+     *   'off'    — getUserMedia is never called; no mic device is opened at all,
+     *              so the OS in-use indicator never lights.
+     *
+     * Default is 'ptt' because the common case is transcribing or translating
+     * what is PLAYING on this machine, and for that the mic contributes nothing
+     * except the user's own room folded into the transcript.
+     */
+    micMode: 'ptt',
+    /**
+     * Superseded by micMode. Kept only so the v6 migration can read the user's
+     * previous choice; the capture layer no longer looks at it.
+     */
     captureMic: true,
+    /** System/loopback audio: whatever is playing on this PC. */
     captureSystem: true,
     // Frame-level VAD. Values are in the 0..1 normalised-energy domain used by
     // renderer/vad-processor.js.
@@ -176,6 +201,13 @@ const DEFAULTS = {
     solve: 'Control+H',
     toggle: 'Control+Shift+Space',
     listen: 'Control+Shift+L',
+    /**
+     * Hold-to-talk. Held, not tapped, so it is picked for being comfortable
+     * under a resting hand and for not colliding with anything common:
+     * Control+Space is the IME toggle on a lot of Windows installs, and plain
+     * Alt+Space opens the system menu.
+     */
+    talk: 'Control+Alt+Space',
     // Not Control+Shift+X: that is taken by default on many Windows setups and
     // registration silently loses to whoever grabbed it first.
     quit: 'Control+Alt+Shift+Q'
@@ -217,6 +249,20 @@ function load() {
    * just because it was written to disk once.
    */
   const from = Number(disk.schema) || 1;
+  if (from < 6) {
+    /**
+     * v6: the microphone stops being an ambient input.
+     *
+     * This is a deliberate behaviour change on upgrade, not a bug fix, so it is
+     * spelled out: a file that had the mic on now lands on push-to-talk rather
+     * than always-on. A user who had explicitly turned the mic OFF keeps it off
+     * -- that choice is stronger than the new default and must not be undone by
+     * an upgrade.
+     */
+    if (disk.audio && typeof disk.audio.micMode !== 'string') {
+      disk.audio.micMode = disk.audio.captureMic === false ? 'off' : 'ptt';
+    }
+  }
   if (from < 5) {
     // v5: ui.stealth renamed to ui.privacy. Carry the user's choice across.
     if (disk.ui && typeof disk.ui.stealth === 'boolean') {

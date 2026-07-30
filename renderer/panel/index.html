@@ -169,6 +169,30 @@
           </div>
         </div>
 
+        <!-- Sources come FIRST in the Voice tab. What Nimbus is allowed to hear
+             is the decision every other control on this tab depends on. -->
+        <div class="s-group" data-tab="voice">
+          <div class="s-label">Audio sources <span class="s-hint">what Nimbus can hear</span></div>
+          <label class="s-check">
+            <input id="f-system-audio" type="checkbox" />
+            <span>System audio <em>(whatever is playing on this PC)</em></span>
+          </label>
+          <div class="s-row">
+            <span>Microphone</span>
+            <select id="f-mic-mode">
+              <option value="ptt">Push to talk</option>
+              <option value="always">Always on while listening</option>
+              <option value="off">Off</option>
+            </select>
+          </div>
+          <div class="s-row" id="row-ptt">
+            <span>Hold to talk</span>
+            <input id="f-ptt-key" type="text" spellcheck="false" readonly placeholder="Click, then press the keys" />
+            <button id="ptt-reset" class="ghost-btn small"><span class="ic"></span><span>Reset</span></button>
+          </div>
+          <div id="mic-hint" class="s-hint"></div>
+        </div>
+
         <div class="s-group" data-tab="voice">
           <div class="s-label">Transcription</div>
           <div class="s-row">
@@ -192,6 +216,12 @@
           <div class="s-row inline" id="row-stt-refresh">
             <button id="refresh-stt" class="ghost-btn small"><span class="ic"></span><span>Find speech models</span></button>
             <span id="stt-status" class="s-hint"></span>
+          </div>
+          <!-- Read by the Translate action. It had no control at all, so
+               translation always produced English whatever was asked for. -->
+          <div class="s-row" id="row-target-lang">
+            <span>Translate into</span>
+            <input id="f-target-lang" type="text" spellcheck="false" placeholder="English" />
           </div>
         </div>
 

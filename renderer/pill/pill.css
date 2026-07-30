@@ -97,6 +97,23 @@ body.speech .wave i { opacity: 1; }
 #listen-btn.on { color: var(--live); }
 #listen-btn.on:hover { background: rgba(74, 222, 128, 0.14); }
 
+/* ------------------------------------------------------------ push to talk --- */
+/* The mic being open is the state a user most needs to be certain about, so it
+   is the loudest thing on the pill while it lasts and completely absent
+   otherwise. Amber, not the green of "listening": they are different claims. */
+#talk-btn { color: var(--tx-3); }
+#talk-btn.hidden { display: none; }
+#talk-btn.on {
+  color: var(--warn);
+  background: rgba(251, 191, 36, 0.16);
+  box-shadow: 0 0 0 1px rgba(251, 191, 36, 0.35);
+}
+#talk-btn.on:hover { background: rgba(251, 191, 36, 0.22); }
+
+/* Waveform turns amber too while the mic is live, so the level being shown is
+   never ambiguous about which source it belongs to. */
+body.mic-open .wave i { background: var(--warn); }
+
 #toggle-btn .chev { display: inline-flex; transition: transform var(--t-normal) var(--ease); }
 #toggle-btn.open .chev { transform: rotate(180deg); }
 

@@ -22,6 +22,9 @@
     </div>
 
     <div class="controls">
+      <!-- Hold to talk. Present only while the mic is on push-to-talk, because
+           a button that does nothing in two of the three mic modes is furniture. -->
+      <button id="talk-btn" class="icon-btn hidden" aria-pressed="false"></button>
       <button id="listen-btn" class="icon-btn" aria-pressed="false"></button>
       <button id="toggle-btn" class="icon-btn" aria-expanded="false"></button>
     </div>

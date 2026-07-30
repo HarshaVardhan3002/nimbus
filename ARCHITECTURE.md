@@ -258,6 +258,104 @@ capturing whatever is playing without a virtual audio cable. This is the one
 place Windows is genuinely easier than macOS, where loopback needs a kernel
 extension. It is what makes live translation of on-screen media work.
 
+### 5.1 The mic is not symmetric with system audio
+
+The two channels used to be one switch each, both defaulting to on. That is the
+wrong shape for what this app is mostly used for. Transcribing or translating a
+video, a call or a lecture playing on this machine wants the `them` channel and
+*only* the `them` channel — the mic contributes the user's own room, keyboard
+and breathing, folded into the same transcript the model then reasons over.
+
+So `audio.micMode` replaces `audio.captureMic`:
+
+| mode | device opened? | audio reaches STT |
+|---|---|---|
+| `ptt` (default) | yes, at listen start | only while the talk chord or the pill's talk button is held |
+| `always` | yes | for as long as Nimbus is listening |
+| `off` | **no** — `getUserMedia` is never called | never |
+
+`them` keeps a plain on/off (`audio.captureSystem`), because it *is* ambient: if
+you turned listening on, you want what is playing transcribed.
+
+#### Where the gate lives
+
+In the **worklet**, not the page:
+
+```
+mic device (open) ──► VadProcessor.process()
+                        │
+                        ├─ gate closed ──► frame discarded on the audio thread
+                        │                  (accLen reset; no rms, no pre-roll,
+                        │                   no utterance, no level)
+                        └─ gate open ────► normal VAD path
+```
+
+Gating at the frame boundary means a closed gate is audio that was thrown away
+the moment it arrived, rather than audio sitting buffered somewhere waiting for
+a later check to drop it.
+
+The main process enforces the same rule a second time on `audio:utterance`. It
+is deliberately redundant: "the mic was shut, therefore the model never heard
+it" is the promise the feature makes, and a promise enforced in exactly one
+place is enforced until the next refactor moves that place.
+
+#### The device stays open
+
+`ptt` opens the mic device at listen start and leaves it open, gated. Opening it
+per key press instead costs 150–400ms of `getUserMedia` on a cold device, which
+eats the first word of every sentence — and a push-to-talk button that reliably
+loses your first word is not a push-to-talk button.
+
+The visible cost is that Windows shows its microphone-in-use indicator for the
+whole session. That is the honest signal: the device really is open. `off` is
+there for anyone who wants it dark, and it is the only mode where the indicator
+can be trusted to mean nothing is happening.
+
+#### Why hold-to-talk is a poll
+
+`globalShortcut` is press-only. It has no key-up event, so "open the mic while
+this is held" cannot be expressed with it at all. The two ways to get a real
+hold on Windows:
+
+| approach | verdict |
+|---|---|
+| `WH_KEYBOARD_LL` hook | Sees every keystroke in every application. Indistinguishable from a keylogger to the user and to their AV. Wrong trade for a feature whose purpose is reducing what the app hears |
+| Poll `GetAsyncKeyState` for one chord | Reads only the two or three virtual keys the user themselves bound. Installs nothing, observes no key content |
+
+`src/pushtotalk.js` polls, at 24ms — finer than human release timing is
+resolvable, and the app already polls the cursor at 8ms to drive window drag.
+
+One subtlety worth recording: `GetAsyncKeyState`'s **bit 0** is "pressed since
+the last call to this function" and clears on read. Polling on it makes a held
+key read as released on the very next tick. Bit 15 is the one that means
+currently-down.
+
+With no native layer there is no key-up to be had, so the chord degrades to a
+`globalShortcut` **latch** — press to open, press again to close — and reports
+itself as `latch` rather than `hold` through `native:status`, so the settings
+screen can say which control the user actually has.
+
+#### The release grace window
+
+The VAD emits an utterance when the speaker *stops*, and users release the key
+at roughly that moment — frequently a few hundred ms before, because the 550ms
+hangover has not elapsed yet. A gate check with no tolerance would therefore
+transcribe the last sentence of every push-to-talk turn and then discard it.
+
+Two mechanisms, because either alone is wrong:
+
+1. Closing the gate **flushes** the worklet: the buffer at the instant of
+   release holds exactly the words the key was held for.
+2. Main accepts a `you` utterance for `MIC_RELEASE_GRACE_MS` (2.5s) after close.
+
+#### One owner for the gate
+
+Three inputs — the configured mode, the global chord, and the pill's talk button
+— collapse to one boolean in the main process, which broadcasts `mic:gate`. The
+renderer applies it to the worklet and the STT intake enforces it. "Was the mic
+open when this audio was captured" therefore has a single answer instead of two
+that can disagree.
+
 ---
 
 ## 6. IPC surface
@@ -269,12 +367,12 @@ preload `INBOUND` list.
 
 ```
 renderer ──► main   settings:get/set · providers:list/discover · native:status
-                    ask · ask:abort · audio:utterance · listen:state
+                    ask · ask:abort · audio:utterance · listen:state · mic:hold
                     ui:pill-size · ui:panel-size · ui:toggle-panel
                     ui:drag-start · ui:drag-end · ui:open-help · ui:status · log
 
 main ──► renderer   panel:state · llm:start/token/done/error · status
-                    transcript · settings:changed · listen:request
+                    transcript · settings:changed · listen:request · mic:gate
                     panel:focus-input · open-settings
 ```
 
@@ -571,7 +669,9 @@ diagnosable instead of mysterious.
 | Neural VAD | Energy VAD only; `_classify()` is the swap point for Silero ONNX |
 | Always-on KWS | Transcript-matched wake word; latency bounded by STT round trip |
 | Streaming ASR | Not wired. Server Whisper dominates the voice-turn budget at ~3s; sherpa-onnx Zipformer would make it near-free |
-| Live translation | Mode exists and is wired to the loopback channel; it is turn-based off completed utterances, not continuous subtitle-style streaming |
+| Live translation | Mode exists, is wired to the loopback channel and now has a configurable target language (`stt.targetLang`, which it previously read but nothing ever set). Still turn-based off completed utterances, not continuous subtitle-style streaming |
+| Hold-to-talk without the native layer | Degrades to a press/press-again latch. There is no key-up event available without koffi, and the settings screen says so rather than mislabelling it |
+| Talk chord conflicts | The poll observes key state, it does not claim the chord, so a chord another app owns still fires that app as well. Default is `Control+Alt+Space` for being uncommon and comfortable to hold |
 | Region during animation | Cleared for the ~370ms open animation and reinstated on settle, to avoid ~120 GDI syscalls/sec and the HRGN leak a mid-flight `SetWindowRgn` failure would cause |
 | Superseded files | Deleted. The pre-split renderer (`renderer/renderer.js`, `index.html`, `styles.css`, `pcm-processor.js`) shipped inside the asar via the `renderer/**` glob despite being unreachable |
 | Stealth mode | `ui.stealth` is off by default because it makes the overlay invisible on this hardware (8.1). If you need capture-hiding, enable it and verify the overlay still draws |
