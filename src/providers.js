@@ -16,6 +16,8 @@
  * was not generalised.
  */
 
+const crypto = require('crypto');
+
 const OPENAI_COMPATIBLE = 'openai';
 
 const BUILTIN = {
@@ -369,18 +371,6 @@ function classifyModel(m) {
 }
 
 /**
- * Ask an OpenAI-compatible server what it actually has loaded.
- *
- * This runs in the MAIN process on purpose. The renderer's CSP is
- * `default-src 'self'`, so it cannot fetch http://127.0.0.1:11434 -- a
- * renderer-side implementation would be silently blocked. Ollama, LM Studio,
- * Lemonade and vLLM all expose /v1/models, so one code path covers them.
- *
- * Returns classified objects, not bare id strings, so the UI can offer only
- * speech models for transcription and only vision models where an image is
- * going to be attached.
- */
-/**
  * Turn an HTTP status from a bare endpoint into the sentence a user can act on.
  * "HTTP 401 from https://.../models" tells you nothing about which of the two
  * fields on screen is wrong.
@@ -400,7 +390,49 @@ function httpHint(status, base, p) {
   return `HTTP ${status} from ${base}/models`;
 }
 
-async function discoverModels(settings, id, { timeoutMs = 6000 } = {}) {
+/**
+ * A model list changes when a server restarts, not between two keystrokes -- but
+ * the settings UI re-asks every time a provider row opens, a tier switches or a
+ * tab is re-entered. Each of those was a fresh HTTP round trip, and against a
+ * cold local server that is the difference between an instant list and a stall.
+ *
+ * Failures are cached far more briefly than successes: long enough to absorb a
+ * burst of re-renders against a server that is down, short enough that a server
+ * which just came up is not reported dead.
+ */
+const DISCOVERY_TTL_MS = 60000;
+const DISCOVERY_FAIL_TTL_MS = 2000;
+const discoveryCache = new Map();
+
+/**
+ * Provider + endpoint + key identify a distinct model list, so changing any of
+ * the three has to miss. The key is hashed, never stored: this map is
+ * process-lifetime state and nothing holding credentials should be.
+ */
+function discoveryKey(id, base, apiKey) {
+  const fp = apiKey ? crypto.createHash('sha256').update(String(apiKey)).digest('hex').slice(0, 16) : '';
+  return `${id} ${base} ${fp}`;
+}
+
+/** Drop cached lists. Called when settings change so edits are never masked. */
+function clearDiscoveryCache() { discoveryCache.clear(); }
+
+/**
+ * Ask an OpenAI-compatible server what it actually has loaded.
+ *
+ * This runs in the MAIN process on purpose. The renderer's CSP is
+ * `default-src 'self'`, so it cannot fetch http://127.0.0.1:11434 -- a
+ * renderer-side implementation would be silently blocked. Ollama, LM Studio,
+ * Lemonade and vLLM all expose /v1/models, so one code path covers them.
+ *
+ * Returns classified objects, not bare id strings, so the UI can offer only
+ * speech models for transcription and only vision models where an image is
+ * going to be attached.
+ *
+ * Pass `force` for a user-initiated refresh, which must always hit the network:
+ * a Refresh button that can return a cached answer is a broken Refresh button.
+ */
+async function discoverModels(settings, id, { timeoutMs = 6000, force = false } = {}) {
   const p = resolve(settings, id);
   if (!p) return { ok: false, error: 'unknown provider', models: [] };
   if (p.kind !== OPENAI_COMPATIBLE) {
@@ -408,31 +440,45 @@ async function discoverModels(settings, id, { timeoutMs = 6000 } = {}) {
   }
   const base = (p.baseURL || 'https://api.openai.com/v1').replace(/\/+$/, '');
 
+  const ck = discoveryKey(id, base, p.hasKey ? p.apiKey : '');
+  if (!force) {
+    const hit = discoveryCache.get(ck);
+    if (hit && hit.expires > Date.now()) return hit.value;
+  }
+
+  const remember = (value) => {
+    discoveryCache.set(ck, {
+      value,
+      expires: Date.now() + (value.ok ? DISCOVERY_TTL_MS : DISCOVERY_FAIL_TTL_MS)
+    });
+    return value;
+  };
+
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
     const headers = { Accept: 'application/json' };
     if (p.hasKey) headers.Authorization = `Bearer ${p.apiKey}`;
     const res = await fetch(`${base}/models`, { headers, signal: ctrl.signal });
-    if (!res.ok) return { ok: false, error: httpHint(res.status, base, p), models: [] };
+    if (!res.ok) return remember({ ok: false, error: httpHint(res.status, base, p), models: [] });
     const json = await res.json();
     const raw = json && Array.isArray(json.data) ? json.data : [];
     const models = raw
       .map(classifyModel)
       .filter((m) => m.id)
       .sort((a, b) => a.id.localeCompare(b.id));
-    return {
+    return remember({
       ok: true,
       models,
       baseURL: base,
       // True when the server told us capabilities rather than us guessing.
       classified: models.some((m) => m.capabilitiesKnown)
-    };
+    });
   } catch (e) {
     const msg = e && e.name === 'AbortError'
       ? `No response from ${base} within ${timeoutMs}ms. Is the server running?`
       : (e && e.message) || String(e);
-    return { ok: false, error: msg, models: [] };
+    return remember({ ok: false, error: msg, models: [] });
   } finally {
     clearTimeout(t);
   }
@@ -441,5 +487,5 @@ async function discoverModels(settings, id, { timeoutMs = 6000 } = {}) {
 module.exports = {
   BUILTIN, BUILTIN_ORDER, NO_KEY, OPENAI_COMPATIBLE,
   list, get, labelOf, resolve, resolveTier, routeFor, TIERS, ROUTE_TIERS,
-  discoverModels, classifyModel, readContextWindow, readModalities, httpHint
+  discoverModels, clearDiscoveryCache, classifyModel, readContextWindow, readModalities, httpHint
 };

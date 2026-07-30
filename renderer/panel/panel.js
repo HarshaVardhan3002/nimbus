@@ -788,7 +788,8 @@
     await persistProvider();
     const status = $('#discover-status');
     status.textContent = 'Checking…';
-    const res = await app.discoverModels(editingProvider);
+    // Explicit user action, so bypass the discovery cache unconditionally.
+    const res = await app.discoverModels(editingProvider, { force: true });
     if (!res.ok) { status.textContent = res.error; reportSize(); return; }
 
     lastDiscovery = res;

@@ -80,13 +80,26 @@ body.has-message .stage { max-width: 300px; opacity: 1; }
 body.listening .wave { display: flex; }
 body.listening.has-message .wave { display: none; }
 
+/*
+ * Full height always; the audio level is applied as scaleY, never as height.
+ *
+ * Animating `height` relayouts and repaints four elements on every VAD frame,
+ * which is the most frequent render in the app and runs the whole time the mic
+ * is open. A transform is compositor-only and touches neither.
+ *
+ * Height is centred by `.wave { align-items: center }`, so scaling about the
+ * centre reproduces the original growth exactly.
+ * Keep this height in sync with BAR_H in pill.js.
+ */
 .wave i {
   display: block;
-  width: 2.5px; height: 3px;
+  width: 2.5px; height: 16px;
   border-radius: 2px;
   background: var(--live);
   opacity: 0.5;
-  transition: height 80ms var(--ease), opacity 80ms linear;
+  transform: scaleY(0.1875);   /* 3px at rest */
+  transform-origin: center;
+  transition: transform 80ms var(--ease), opacity 80ms linear;
 }
 body.speech .wave i { opacity: 1; }
 

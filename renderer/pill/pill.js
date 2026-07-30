@@ -81,7 +81,7 @@
     const src = ambientIsMic ? 'microphone' : 'system audio';
     listenBtn.title = (on ? 'Stop listening to ' + src : 'Listen to ' + src) + '  (Ctrl+Shift+L)';
     $('#m-listen').querySelector('span:nth-child(2)').textContent = on ? 'Stop listening' : 'Start listening';
-    if (!on) waveBars.forEach((b) => { b.style.height = '3px'; });
+    if (!on) waveBars.forEach((b) => setBar(b, BAR_REST));
     syncTalkButton();
     reportSize();
   }
@@ -113,10 +113,18 @@
   }
 
   const BAR = [0.6, 1.0, 0.85, 0.5];
+  const BAR_H = 16;        // must match `.wave i` height in pill.css
+  const BAR_REST = 3;      // px
+
+  /** Level as a transform, not a height. See the `.wave i` comment in pill.css. */
+  function setBar(el, px) {
+    el.style.transform = 'scaleY(' + Math.min(1, px / BAR_H).toFixed(3) + ')';
+  }
+
   function renderLevel(rms) {
     const n = Math.min(1, Math.sqrt(rms / 0.11));
     for (let i = 0; i < waveBars.length; i++) {
-      waveBars[i].style.height = (3 + n * 12 * BAR[i] * (0.85 + Math.random() * 0.3)).toFixed(1) + 'px';
+      setBar(waveBars[i], BAR_REST + n * 12 * BAR[i] * (0.85 + Math.random() * 0.3));
     }
   }
 

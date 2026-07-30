@@ -1,0 +1,14 @@
+# Repo blobs are LF. Without this, an editor writing CRLF on Windows can stage a
+# whole-file line-ending flip as if it were a rewrite, which erases `git blame`
+# for that file. Pin the working copy to LF so the question never arises.
+* text=auto eol=lf
+
+# Binary: never touch these.
+*.png   binary
+*.ico   binary
+*.icns  binary
+*.onnx  binary
+*.wav   binary
+*.exe   binary
+*.dll   binary
+*.node  binary

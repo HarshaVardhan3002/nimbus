@@ -39,6 +39,17 @@ const PILL = { w: 232, h: 40, radius: 20 };
 const PANEL = { w: 640, h: 320, radius: 22, minH: 2 };
 const GAP = 10;          // vertical space between pill and panel
 const TOP_MARGIN = 12;
+// Kept clear of every work-area edge so the panel never sits flush against a
+// taskbar or a display seam.
+const EDGE_MARGIN = 8;
+/**
+ * Below this much room, "below the pill" is not a usable place to put the panel
+ * and it flips above instead. Roughly a header plus two rows -- less than that
+ * and the user is scrolling a letterbox.
+ */
+const MIN_PANEL_H = 180;
+/** Below this the panel is unreadable, so it overhangs a tiny display instead. */
+const MIN_PANEL_W = 320;
 // Menu geometry, mirrored in pill.css. The window is clipped to pill OR menu,
 // so these must match what the CSS actually paints.
 const MENU_WIDTH = 208;
@@ -87,7 +98,9 @@ class WindowManager {
     this.dragTimer = null;
     this.dragOffset = { x: 0, y: 0 };
 
-    this._lastRegion = { pill: null, panel: null };
+    // Last result of _panelLayout(). Cached so the spring frame and the drag
+    // tick can place the panel without repeating the display lookup 125x/sec.
+    this.panelLay = null;
   }
 
   // ------------------------------------------------------------- lifecycle
@@ -119,13 +132,20 @@ class WindowManager {
       show: false
     });
 
+    // applyGlass() treats BOTH windows in one pass, so it runs once -- after both
+    // are showable -- rather than once per ready-to-show.
+    let showable = 0;
+    const glassWhenBothReady = () => { if (++showable === 2) this.applyGlass(this.glassMode); };
+
     this.pill.once('ready-to-show', () => {
       this.pill.showInactive();
-      this._dressWindow(this.pill, TINT_PILL, PILL.radius);
+      this._dressWindow(this.pill);
       if (this.stealth) this.applyStealth(true);
+      glassWhenBothReady();
     });
     this.panel.once('ready-to-show', () => {
-      this._dressWindow(this.panel, TINT_PANEL, PANEL.radius);
+      this._dressWindow(this.panel);
+      glassWhenBothReady();
     });
 
     // Keep the panel glued under the pill whenever the pill moves for any
@@ -227,12 +247,18 @@ class WindowManager {
     return win;
   }
 
-  /** Apply the native treatment. Every call is individually best-effort. */
-  _dressWindow(win, tint, radius) {
+  /**
+   * Apply the native treatment to a window that has just become showable.
+   * Every call is individually best-effort.
+   *
+   * Only the per-window part is done here. Glass is NOT applied per window:
+   * applyGlass() owns corner preference, region and backdrop together for both
+   * windows at once, so calling it from here ran the whole pass twice -- once
+   * per ready-to-show -- and treated each window twice over. create() applies it
+   * once, after both windows exist.
+   */
+  _dressWindow(win) {
     win32.excludeFromAltTab(win);
-    // applyGlass owns corner preference, region and backdrop together, because
-    // the three have to agree. Calling it here keeps one code path.
-    this.applyGlass(this.glassMode);
   }
 
   // ------------------------------------------------------------- geometry
@@ -304,22 +330,62 @@ class WindowManager {
     win32.setRoundedRegion(win, wPx, hPx, Math.min(rPx, Math.floor(hPx / 2)));
   }
 
+  /**
+   * Where the panel may go on the pill's current display, and how tall it may be.
+   *
+   * Computed in one place and cached, because three callers used to answer this
+   * question independently -- _repositionPanel, _onSpringFrame and
+   * availableHeight -- and could disagree about width and about which display
+   * they were on.
+   *
+   * Handles the two cases a fixed 640x(below the pill) layout got wrong:
+   *
+   *   - Narrow displays. 640 DIP does not fit on a 1366x768 laptop at 150%
+   *     scaling, which is 910 DIP wide, once edge margins are taken. Width is
+   *     clamped to the display instead of assumed.
+   *   - A pill dragged low. Below the pill there may be no usable room at all,
+   *     and the old code still placed the panel there with no Y clamp, so it
+   *     opened off the bottom of the screen. It now flips above the pill.
+   *
+   * Y is not returned: it depends on the animating height. See _panelY().
+   */
+  _panelLayout() {
+    const p = this.pill.getBounds();
+    const wa = screen.getDisplayMatching(p).workArea;
+
+    const w = Math.max(MIN_PANEL_W, Math.min(PANEL.w, wa.width - EDGE_MARGIN * 2));
+
+    const below = (wa.y + wa.height) - (p.y + p.height + GAP) - EDGE_MARGIN;
+    const above = (p.y - GAP - EDGE_MARGIN) - wa.y;
+    // Flip only when below is genuinely unusable AND above is better, so the
+    // panel keeps its habitual position everywhere except the bottom strip.
+    const flip = below < MIN_PANEL_H && above > below;
+
+    let x = Math.round(p.x + p.width / 2 - w / 2);
+    x = Math.max(wa.x + EDGE_MARGIN, Math.min(x, wa.x + wa.width - w - EDGE_MARGIN));
+
+    this.panelLay = {
+      x, w, flip,
+      avail: Math.max(PANEL.minH, flip ? above : below),
+      pillY: p.y,
+      pillH: p.height
+    };
+    return this.panelLay;
+  }
+
+  /** Top edge for a given height. Flipped panels grow upward from the pill. */
+  _panelY(lay, h) {
+    return lay.flip ? lay.pillY - GAP - h : lay.pillY + lay.pillH + GAP;
+  }
+
   _repositionPanel() {
     if (!this.pill || !this.panel || this.panel.isDestroyed()) return;
-    const p = this.pill.getBounds();
-    const w = this.panelSize.w;
-    let x = Math.round(p.x + p.width / 2 - w / 2);
-    let y = p.y + p.height + GAP;
-
-    // Keep the panel on the display the pill is on.
-    const disp = screen.getDisplayMatching(p);
-    const wa = disp.workArea;
-    x = Math.max(wa.x, Math.min(x, wa.x + wa.width - w));
-
-    // Height is the animated axis, so it is the one value we read back -- but
-    // only to preserve it, never to re-derive width from it.
-    const curH = this.panel.getBounds().height;
-    this._place(this.panel, x, y, w, curH);
+    const lay = this._panelLayout();
+    // Height is the animated axis, so it is the one value read back -- only to
+    // preserve it, never to re-derive width from it. Capped so a panel sized for
+    // a tall display cannot hang off a short one.
+    const h = Math.min(this.panel.getBounds().height, lay.avail);
+    this._place(this.panel, lay.x, this._panelY(lay, h), lay.w, h);
   }
 
   /**
@@ -389,8 +455,10 @@ class WindowManager {
 
     if (!this.panelOpen) return;
     // Retarget mid-flight; the spring keeps its velocity so a resize that
-    // lands during the open animation blends instead of restarting.
-    this.heightSpring.setPreset('resize').setTarget(nh);
+    // lands during the open animation blends instead of restarting. Capped to
+    // the display so tall content cannot push the window off-screen.
+    const lay = this.panelLay || this._panelLayout();
+    this.heightSpring.setPreset('resize').setTarget(Math.min(nh, lay.avail));
     this.loop.kick();
   }
 
@@ -400,11 +468,12 @@ class WindowManager {
     if (this.panelOpen) { if (focus) this.panel.focus(); return; }
     this.panelOpen = true;
 
-    this._repositionPanel();
-    const b = this.panel.getBounds();
-    this._place(this.panel, b.x, b.y, this.panelSize.w, PANEL.minH);
+    // Open collapsed at the layout's position, then spring to the content height
+    // the renderer asked for -- capped to what the display actually offers.
+    const lay = this._panelLayout();
+    this._place(this.panel, lay.x, this._panelY(lay, PANEL.minH), lay.w, PANEL.minH);
     this.heightSpring.snapTo(PANEL.minH);
-    this.heightSpring.setPreset('emerge').setTarget(this.panelSize.h);
+    this.heightSpring.setPreset('emerge').setTarget(Math.min(this.panelSize.h, lay.avail));
 
     // Region is cleared for the duration of the animation and reinstated on
     // settle. Reapplying a GDI region every frame is ~120 syscalls/sec and any
@@ -446,9 +515,11 @@ class WindowManager {
 
   _onSpringFrame() {
     if (!this.panel || this.panel.isDestroyed() || !this.panelOpen) return false;
+    // Cached layout, not a fresh one: this runs every frame, and the pill cannot
+    // move mid-animation without _repositionPanel refreshing the cache anyway.
+    const lay = this.panelLay || this._panelLayout();
     const h = Math.max(PANEL.minH, Math.round(this.heightSpring.value));
-    const b = this.panel.getBounds();
-    this._place(this.panel, b.x, b.y, this.panelSize.w, h);
+    this._place(this.panel, lay.x, this._panelY(lay, h), lay.w, h);
     if (this.heightSpring.atRest && this._regionMode()) this._applyRegion(this.panel, PANEL.radius);
     return true;
   }
@@ -503,10 +574,17 @@ class WindowManager {
     x = Math.max(wa.x, Math.min(x, wa.x + wa.width - w));
     y = Math.max(wa.y, Math.min(y, wa.y + wa.height - h));
 
-    const b = this.pill.getBounds();
-    if (x === b.x && y === b.y && b.width === w && b.height === h) return;
+    // No getBounds() here. _place() already early-outs against its own last
+    // request, and that comparison is the exact one -- getBounds() round-trips
+    // through physical pixels and disagrees at fractional scale factors. This
+    // runs 125x/sec, so the saved syscall is worth more than the duplicate test.
+    const moved = this.pill.__cueBounds;
+    if (moved && moved.x === Math.round(x) && moved.y === Math.round(y)) return;
     this._place(this.pill, x, y, w, h);
-    this._repositionPanel();
+    // Only when the panel is actually on screen. Repositioning a hidden window
+    // every 8ms costs two getBounds and a display lookup for nothing, and the
+    // panel is re-laid-out on open regardless.
+    if (this.panelOpen) this._repositionPanel();
   }
 
   endDrag() {
@@ -528,13 +606,6 @@ class WindowManager {
   }
 
   // ------------------------------------------------------------- misc
-  /**
-   * Work-area height in DIPs for whichever display the pill is on.
-   *
-   * The panel needs this because it cannot use `vh`: its own window height is
-   * what the panel is trying to compute, so a vh-based cap is circular and
-   * collapses to near-zero while the window is small.
-   */
   /**
    * Apply a glass mode to both windows immediately.
    *
@@ -646,10 +717,22 @@ class WindowManager {
     if (this.panelOpen && this.panel && !this.panel.isDestroyed()) this._applyRegion(this.panel, PANEL.radius);
   }
 
+  /**
+   * Height in DIPs the panel may actually occupy, on whichever display the pill
+   * is on and in whichever direction it will open.
+   *
+   * The panel needs this because it cannot use `vh`: its own window height is
+   * what the panel is trying to compute, so a vh-based cap is circular and
+   * collapses to near-zero while the window is small.
+   *
+   * This is the space available at the panel's position, not the whole work
+   * area. The two differ by the pill and the gap in the normal case, and by a
+   * lot once the pill sits low -- which is exactly when a whole-work-area answer
+   * told the renderer to lay out content that could not be shown.
+   */
   availableHeight() {
-    const anchor = this.pill && !this.pill.isDestroyed() ? this.pill.getBounds() : null;
-    const disp = anchor ? screen.getDisplayMatching(anchor) : screen.getPrimaryDisplay();
-    return disp.workArea.height;
+    if (!this.pill || this.pill.isDestroyed()) return screen.getPrimaryDisplay().workArea.height;
+    return this._panelLayout().avail;
   }
 
   broadcast(channel, data) {

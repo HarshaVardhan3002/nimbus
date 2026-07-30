@@ -16,6 +16,7 @@
  */
 
 const { pcmToWav } = require('./wav');
+const { cachedClient } = require('./clients');
 
 // --------------------------------------------------------------- transports
 async function transcribeOpenAICompatible({ baseURL, apiKey, model, language, wav, timeoutMs = 30000 }) {
@@ -49,7 +50,9 @@ async function transcribeOpenAICompatible({ baseURL, apiKey, model, language, wa
 
 async function transcribeGemini({ apiKey, wav }) {
   const { GoogleGenAI } = require('@google/genai');
-  const ai = new GoogleGenAI({ apiKey });
+  // Pooled: transcription runs once per utterance, so a per-call client meant a
+  // fresh TLS handshake for every phrase spoken.
+  const ai = cachedClient('gemini', '', apiKey, () => new GoogleGenAI({ apiKey }));
   const res = await ai.models.generateContent({
     model: 'gemini-2.5-flash',
     contents: [{

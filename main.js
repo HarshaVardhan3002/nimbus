@@ -344,6 +344,9 @@ function registerIPC() {
     // fixed the thing that was failing.
     state.sttFailures = 0;
     state.sttMuted = false;
+    // Same reasoning for discovery: a cached model list from before the edit
+    // would report the old endpoint's answer for the new one.
+    providers.clearDiscoveryCache();
     // The mic mode and the talk chord both live in settings, so every save is a
     // chance that the gate's inputs just changed underneath it.
     syncPushToTalk();
@@ -391,7 +394,10 @@ function registerIPC() {
     app.exit(0);
     return true;
   });
-  ipcMain.handle('providers:discover', (_e, id) => providers.discoverModels(store.getSettings(), id));
+  // `force` comes from the Refresh button: a refresh that can return a cached
+  // answer is not a refresh. Ordinary UI re-reads leave it unset and hit cache.
+  ipcMain.handle('providers:discover', (_e, id, opts) =>
+    providers.discoverModels(store.getSettings(), id, { force: !!(opts && opts.force) }));
 
   /**
    * One button that answers "is this provider actually usable?".

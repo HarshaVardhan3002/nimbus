@@ -10,6 +10,11 @@
  */
 
 const providers = require('./providers');
+// Clients are pooled; see src/clients.js for why they are not built per request.
+// The require() calls below stay lazy on purpose -- Node memoises them, so they
+// cost once per process, and hoisting them would pull three SDKs into app
+// startup when most users configure one.
+const { cachedClient } = require('./clients');
 
 function stripDataUrl(dataUrl) {
   const m = /^data:(.+?);base64,(.*)$/s.exec(dataUrl || '');
@@ -96,14 +101,14 @@ function emptyAnswerError(model, reasoningChars, finishReason) {
 // ------------------------------------------------------------------ openai
 async function streamOpenAI({ apiKey, model, baseURL, system, turns, imageDataUrl, maxTokens, onToken, onReasoning, onNotice, signal }) {
   const OpenAI = require('openai');
-  const client = new OpenAI({
+  const client = cachedClient('openai', baseURL, apiKey, () => new OpenAI({
     apiKey: apiKey || providers.NO_KEY,
     baseURL: baseURL || undefined,
     // Local servers on a cold model load routinely exceed the default timeout,
     // and the SDK's automatic retry would re-queue a prompt we already streamed.
     maxRetries: 1,
     timeout: 120000
-  });
+  }));
 
   const messages = [];
   if (system) messages.push({ role: 'system', content: system });
@@ -157,7 +162,7 @@ async function streamOpenAI({ apiKey, model, baseURL, system, turns, imageDataUr
 // --------------------------------------------------------------- anthropic
 async function streamAnthropic({ apiKey, model, system, turns, imageDataUrl, maxTokens, onToken, onReasoning, onNotice, signal }) {
   const Anthropic = require('@anthropic-ai/sdk');
-  const client = new Anthropic({ apiKey, maxRetries: 1 });
+  const client = cachedClient('anthropic', '', apiKey, () => new Anthropic({ apiKey, maxRetries: 1 }));
 
   const messages = turns.map((t, i) => {
     const isLast = i === turns.length - 1;
@@ -207,7 +212,7 @@ async function streamAnthropic({ apiKey, model, system, turns, imageDataUrl, max
 // ------------------------------------------------------------------ gemini
 async function streamGemini({ apiKey, model, system, turns, imageDataUrl, maxTokens, onToken, onReasoning }) {
   const { GoogleGenAI } = require('@google/genai');
-  const ai = new GoogleGenAI({ apiKey });
+  const ai = cachedClient('gemini', '', apiKey, () => new GoogleGenAI({ apiKey }));
 
   const contents = turns.map((t, i) => {
     const isLast = i === turns.length - 1;
