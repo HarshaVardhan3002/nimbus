@@ -38,7 +38,7 @@ const cache = new Map();
  */
 function cachedClient(kind, baseURL, apiKey, build) {
   const fp = crypto.createHash('sha256').update(String(apiKey || '')).digest('hex').slice(0, 16);
-  const key = `${kind} ${baseURL || ''} ${fp}`;
+  const key = `${kind}|${baseURL || ''}|${fp}`;
   const hit = cache.get(key);
   if (hit) return hit;
   if (cache.size >= CLIENT_CACHE_MAX) cache.clear();

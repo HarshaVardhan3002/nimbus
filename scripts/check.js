@@ -44,6 +44,35 @@ for (const f of jsFiles) {
   }
 }
 
+// ------------------------------------------------------- 1b. source hygiene
+/**
+ * A control character written into source as a literal byte rather than an
+ * escape. This is not cosmetic: git classifies a file containing NUL as binary,
+ * which silently disables line-ending normalisation, `git diff` and `git blame`
+ * for that file. It happened here -- a NUL separator in a template literal
+ * was written as a raw NUL, and the whole file started staging as a rewrite.
+ *
+ * Tab and the CR of a CRLF pair are legitimate; nothing else below 0x20 is.
+ */
+const sourceFiles = files.filter((f) => /\.(js|css|html|json|md)$/.test(f));
+for (const f of sourceFiles) {
+  const buf = fs.readFileSync(path.join(ROOT, f));
+  for (let i = 0; i < buf.length; i++) {
+    const b = buf[i];
+    if (b >= 0x20 || b === 0x09 || b === 0x0a) continue;
+    if (b === 0x0d && buf[i + 1] === 0x0a) continue;
+    const line = buf.slice(0, i).toString('utf8').split('\n').length;
+    problems.push(
+      'CONTROL CHAR ' + f + ':' + line + ': raw byte 0x' + b.toString(16).padStart(2, '0')
+      + ' in source. Write it as an escape, or use a printable delimiter.'
+    );
+    break;   // one report per file is enough to act on
+  }
+}
+if (!problems.some((p) => p.startsWith('CONTROL CHAR'))) {
+  ok.push('hygiene: no raw control bytes in ' + sourceFiles.length + ' source files');
+}
+
 // ---------------------------------------------------------------- 2. ipc parity
 const preload = read('preload.js');
 const mainSrc = read('main.js');

@@ -1,6 +1,9 @@
-# Repo blobs are LF. Without this, an editor writing CRLF on Windows can stage a
-# whole-file line-ending flip as if it were a rewrite, which erases `git blame`
-# for that file. Pin the working copy to LF so the question never arises.
+# Repo blobs are LF. Pin the working copy to LF so an editor writing CRLF on
+# Windows cannot stage a whole-file line-ending flip that reads as a rewrite.
+#
+# Note this is not a complete guard: git skips EOL conversion entirely for files
+# it classifies as binary, and a single NUL byte anywhere in a file is enough to
+# trigger that. scripts/check.js covers that case.
 * text=auto eol=lf
 
 # Binary: never touch these.

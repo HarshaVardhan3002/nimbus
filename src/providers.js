@@ -408,10 +408,14 @@ const discoveryCache = new Map();
  * Provider + endpoint + key identify a distinct model list, so changing any of
  * the three has to miss. The key is hashed, never stored: this map is
  * process-lifetime state and nothing holding credentials should be.
+ *
+ * '|' as the delimiter, not a control character: an id is a slug, a base URL
+ * carries no bare '|', and a fingerprint is hex, so it cannot collide -- and a
+ * literal control byte in source makes git treat the whole file as binary.
  */
 function discoveryKey(id, base, apiKey) {
   const fp = apiKey ? crypto.createHash('sha256').update(String(apiKey)).digest('hex').slice(0, 16) : '';
-  return `${id} ${base} ${fp}`;
+  return `${id}|${base}|${fp}`;
 }
 
 /** Drop cached lists. Called when settings change so edits are never masked. */
