@@ -11,6 +11,7 @@
     "pack": "electron-builder --dir",
     "dist": "electron-builder --win nsis",
     "check": "node scripts/check.js",
+    "test:history": "node scripts/test-history.js",
     "icon": "node scripts/set-icon.js"
   },
   "build": {

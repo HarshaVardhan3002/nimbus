@@ -21,6 +21,9 @@
   // Which provider the Advanced block's open/closed state was last decided for.
   // Tracked so a manual collapse survives re-renders of the same provider.
   let advancedFor = null;
+  // Which stored conversation is on screen, so a rename in the history list can
+  // update the header without a round trip to ask which one that is.
+  let currentId = null;
   let lastDiscovery = { models: [], classified: false };
   // 'hold' | 'latch' | 'unbound', from native:status. Decides whether the
   // push-to-talk row can honestly call itself hold-to-talk.
@@ -44,7 +47,7 @@
   $('#send').innerHTML = icon('corner-down-left', { size: 15 });
   $('#s-close').innerHTML = icon('x', { size: 16 });
   $('#h-close').innerHTML = icon('x', { size: 16 });
-  $('#history-btn').innerHTML = icon('message-circle', { size: 15 });
+  $('#history-btn').innerHTML = icon('history', { size: 15 });
   $('#new-btn').innerHTML = icon('plus', { size: 16 });
   $('#add-provider .ic').innerHTML = icon('plus', { size: 13 });
   $('#refresh-models .ic').innerHTML = icon('refresh-cw', { size: 12 });
@@ -355,6 +358,48 @@
     return d.toLocaleDateString([], { day: 'numeric', month: 'short' });
   }
 
+  /**
+   * Rename in place.
+   *
+   * Titles are derived from the first thing you said, which is a good guess and
+   * sometimes a bad name. Editing happens on the row rather than in a dialog:
+   * a modal here would take focus from the panel, and an Electron dialog blocks
+   * the whole window.
+   */
+  function beginRename(row, titleEl, s) {
+    if (row.querySelector('.h-rename')) return;
+    const box = document.createElement('input');
+    box.type = 'text';
+    box.className = 'h-rename';
+    box.value = s.title;
+    box.spellcheck = false;
+    titleEl.replaceWith(box);
+    box.focus();
+    box.select();
+
+    let settled = false;
+    const finish = async (commit) => {
+      if (settled) return;
+      settled = true;
+      const next = box.value.trim();
+      if (commit && next && next !== s.title) {
+        await app.historyRename(s.id, next);
+        if (s.id === currentId) $('#convo-title').textContent = next;
+      }
+      renderHistory($('#h-search').value.trim());
+    };
+
+    // The row is a button. Without this every keystroke and click inside the
+    // field would also count as a click on the row and open the conversation.
+    box.addEventListener('click', (e) => e.stopPropagation());
+    box.addEventListener('keydown', (e) => {
+      e.stopPropagation();
+      if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+      else if (e.key === 'Escape') { e.preventDefault(); finish(false); }
+    });
+    box.addEventListener('blur', () => finish(true));
+  }
+
   async function renderHistory(query) {
     const items = query ? await app.historySearch(query) : await app.historyList();
     const list = $('#h-list');
@@ -378,29 +423,50 @@
         + (s.snippet || s.preview ? '  ·  ' + (s.snippet || s.preview) : '');
       b.appendChild(t); b.appendChild(m);
 
+      const tools = document.createElement('span');
+      tools.className = 'h-tools';
+
+      const pen = document.createElement('span');
+      pen.className = 'icon-btn';
+      pen.title = 'Rename';
+      pen.innerHTML = icon('pencil', { size: 12 });
+      pen.addEventListener('click', (ev) => { ev.stopPropagation(); beginRename(b, t, s); });
+      tools.appendChild(pen);
+
       const kill = document.createElement('span');
       kill.className = 'kill icon-btn';
+      kill.title = 'Delete';
       kill.innerHTML = icon('trash', { size: 12 });
       kill.addEventListener('click', async (ev) => {
         ev.stopPropagation();
         await app.historyDelete(s.id);
         renderHistory($('#h-search').value.trim());
       });
-      b.appendChild(kill);
+      tools.appendChild(kill);
+      b.appendChild(tools);
 
       b.addEventListener('click', async () => {
-        const full = await app.historyLoad(s.id);
-        if (full) { renderSession(full); showView('chat'); }
+        // The load broadcasts `history:opened`, which this window also receives
+        // and renders from. Painting the session here as well would draw the
+        // whole transcript twice for every open.
+        await app.historyLoad(s.id);
+        showView('chat');
       });
       list.appendChild(b);
     }
-    $('#h-count').textContent = items.length + (items.length === 1 ? ' conversation' : ' conversations');
+    // Searching reports what matched; the plain list reports the whole store,
+    // which is not the same number once the list is paged.
+    const total = query ? items.length : await app.historyCount();
+    $('#h-count').textContent = query
+      ? items.length + (items.length === 1 ? ' match' : ' matches')
+      : total + (total === 1 ? ' conversation' : ' conversations');
     reportSize();
   }
 
   /** Replay a stored session into the chat view. */
   function renderSession(s) {
     clearMessages();
+    currentId = (s && s.id) || null;
     $('#convo-title').textContent = (s && s.title) || 'New conversation';
     for (const m of ((s && s.messages) || [])) {
       if (m.role === 'user') addUser(m.content);
@@ -420,18 +486,27 @@
   }
 
   $('#history-btn').addEventListener('click', () => showView('history'));
+  $('#convo-title').addEventListener('click', () => showView('history'));
   $('#h-close').addEventListener('click', () => showView('chat'));
   $('#new-btn').addEventListener('click', async () => {
     await app.historyNew();
     clearMessages();
+    currentId = null;
     $('#convo-title').textContent = 'New conversation';
     showView('chat');
     input.focus();
   });
-  $('#h-search').addEventListener('input', () => renderHistory($('#h-search').value.trim()));
+  // Debounced: a query is an IPC round trip plus an index lookup, and typing
+  // "screenshot" would otherwise fire ten of them and rebuild the list ten times.
+  let searchTimer = 0;
+  $('#h-search').addEventListener('input', () => {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => renderHistory($('#h-search').value.trim()), 120);
+  });
   $('#h-clear').addEventListener('click', async () => {
     await app.historyClear();
     clearMessages();
+    currentId = null;
     $('#convo-title').textContent = 'New conversation';
     renderHistory();
   });

@@ -1,6 +1,12 @@
 node_modules/
 dist/
 out/
+
+# The built installer is copied to the repo root for convenience. It is ~190MB,
+# which is both over GitHub's file limit and permanent once it lands in history.
+# Releases carry the binary; the repo carries the source that builds it.
+/*.exe
+/*.exe.blockmap
 native/systemaudio
 *.log
 .DS_Store

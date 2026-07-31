@@ -199,7 +199,7 @@ A typed question does not capture the screen. Sending the display to a provider 
 Nimbus does not require a cloud account to run with local models. However, privacy depends on the providers and features you enable:
 
 - API keys and provider configuration are stored in Nimbus's Electron `userData` directory in `nimbus-data.json`. They are **local but not encrypted**; protect the Windows account that owns them.
-- Conversation sessions are stored locally under the app's `userData/history` directory. Delete them from the in-app history view when no longer needed.
+- Conversation history is stored locally in a SQLite database, `nimbus.db`, in the same `userData` directory. It holds every message you have sent and received, in plain text, and is **not encrypted**. Delete conversations individually or all at once from the in-app history view. Earlier versions kept this history as JSON under `userData/history`; that folder is imported once on first launch and then renamed to `history.imported`, so delete it too if you want the old copy gone.
 - A screen image is sent only when a feature requests it and the chosen route is marked vision-capable. With a cloud vision provider, that image leaves the machine.
 - Audio is sent to the selected transcription provider. A local OpenAI-compatible Whisper server keeps it on the machine; a remote STT provider does not.
 - The optional capture-privacy setting relies on Windows' display-affinity support. It cannot prevent cameras, capture cards, kernel-level capture software, or every possible recording path. Verify that the overlay still draws correctly after enabling it.

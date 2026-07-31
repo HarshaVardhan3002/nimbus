@@ -19,6 +19,7 @@ const { MODES } = require('./src/prompts');
 const { WarmthKeeper } = require('./src/warmth');
 const { PushToTalk } = require('./src/pushtotalk');
 const history = require('./src/history');
+const db = require('./src/db');
 
 const DEV = !!process.env.CUE_DEV;
 const log = (...a) => { if (DEV) console.log('[nimbus]', ...a); };
@@ -322,14 +323,22 @@ async function runFeature(mode, userText) {
         model: activeLLM.model, provider: activeLLM.provider, tier: activeLLM.tier
       });
     }
-    history.save(convo);
-    broadcast('history:changed', { id: convo.id, title: convo.title });
-
     broadcast('llm:done', {});
   } catch (e) {
     if (e && e.aborted) broadcast('llm:done', {});
     else broadcast('llm:error', { message: (e && e.message) || String(e) });
   } finally {
+    /**
+     * Persisted in `finally`, not on the success path.
+     *
+     * The user's question is appended before the request goes out, so a provider
+     * that errors or a reply the user aborts used to throw that question away --
+     * exactly the conversations you most want to find again. The write is
+     * incremental and idempotent, so doing it here costs one INSERT.
+     */
+    if (convo && convo.messages.length && history.save(convo)) {
+      broadcast('history:changed', { id: convo.id, title: convo.title });
+    }
     state.busy = false;
     abortController = null;
   }
@@ -461,8 +470,10 @@ function registerIPC() {
   ipcMain.handle('stealth:status', () => (wm ? wm.stealthStatus() : { enabled: false, verified: false }));
 
   // ---- conversation history ----
-  ipcMain.handle('history:list', () => history.list());
+  ipcMain.handle('history:list', (_e, opts) => history.list(opts));
   ipcMain.handle('history:search', (_e, q) => history.search(q));
+  ipcMain.handle('history:count', () => history.count());
+  ipcMain.handle('history:rename', (_e, id, title) => history.rename(id, title));
   ipcMain.handle('history:load', (_e, id) => {
     const s = history.load(id);
     if (s) { convo = s; broadcast('history:opened', s); }
@@ -666,6 +677,10 @@ app.whenReady().then(() => {
       .catch(() => callback());
   }, { useSystemPicker: false });
 
+  // Before any IPC is registered: the history handlers assume an open store,
+  // and userData is only guaranteed resolvable once the app is ready.
+  history.init();
+
   const nat = win32.status();
   if (!nat.available) {
     console.warn('[nimbus] native window effects unavailable:', nat.error);
@@ -724,6 +739,7 @@ app.on('will-quit', () => {
   if (ptt) ptt.stop();
   globalShortcut.unregisterAll();
   store.flush();          // debounced writes must not be lost on exit
+  db.close();             // checkpoints the WAL, so the next launch opens clean
   if (wm) wm.destroy();
 });
 

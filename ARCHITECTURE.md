@@ -366,14 +366,17 @@ has a main-process handler, every channel a renderer listens for is in the
 preload `INBOUND` list.
 
 ```
-renderer ──► main   settings:get/set · providers:list/discover · native:status
+renderer ──► main   settings:get/set · providers:list/discover/test · native:status
+                    history:list/search/count/load/new/rename/delete/clear/current
                     ask · ask:abort · audio:utterance · listen:state · mic:hold
                     ui:pill-size · ui:panel-size · ui:toggle-panel
                     ui:drag-start · ui:drag-end · ui:open-help · ui:status · log
 
-main ──► renderer   panel:state · llm:start/token/done/error · status
+main ──► renderer   panel:state · llm:start/token/reasoning/done/error · status
                     transcript · settings:changed · listen:request · mic:gate
-                    panel:focus-input · open-settings
+                    panel:focus-input · open-settings · display:changed
+                    glass:changed · warmth:state · stealth:state
+                    history:changed · history:opened
 ```
 
 ---
@@ -381,9 +384,11 @@ main ──► renderer   panel:state · llm:start/token/done/error · status
 ## 7. Verification
 
 ```
-npm run check     # 20 files: syntax, IPC parity, inbound allowlist,
-                  # dead-API scan, asset resolution, package/asar config,
-                  # registry-vs-store coherence
+npm run check     # syntax, control-byte hygiene, IPC parity, inbound allowlist,
+                  # dead-API scan, single-setBounds geometry invariant,
+                  # renderer-vs-markup selector agreement, asset resolution,
+                  # package/asar config, registry-vs-store coherence,
+                  # and the storage seam (§12.3)
 ```
 
 The dead-API scan strips comments before matching and uses word boundaries.
@@ -675,3 +680,92 @@ diagnosable instead of mysterious.
 | Region during animation | Cleared for the ~370ms open animation and reinstated on settle, to avoid ~120 GDI syscalls/sec and the HRGN leak a mid-flight `SetWindowRgn` failure would cause |
 | Superseded files | Deleted. The pre-split renderer (`renderer/renderer.js`, `index.html`, `styles.css`, `pcm-processor.js`) shipped inside the asar via the `renderer/**` glob despite being unreachable |
 | Stealth mode | `ui.stealth` is off by default because it makes the overlay invisible on this hardware (8.1). If you need capture-hiding, enable it and verify the overlay still draws |
+
+---
+
+## 12. Conversation store (`src/db.js`, `src/history.js`)
+
+### 12.1 Why not JSON files
+
+History began as a folder: `index.json` plus one file per session. That is fine
+for listing and wrong for retrieving. Searching meant reading and parsing every
+session on every keystroke, so search cost grew with history size on a path that
+runs while the user types. Two files also had to agree — a crash between writing
+a session and writing the index left the list disagreeing with the sessions.
+
+### 12.2 Why SQLite, and why `node:sqlite`
+
+Electron ships `node:sqlite` in its own Node build. Electron 43 has SQLite
+3.53.1 with FTS5 and WAL, verified by running the check under
+`ELECTRON_RUN_AS_NODE=1` rather than assuming it.
+
+That matters more than the SQL: `better-sqlite3` is the same queries plus a
+compiled dependency, an `electron-rebuild` step, an entry in `asarUnpack`, and
+an ABI that breaks on the next Electron bump. The built-in has none of those.
+
+WAL is on so the history list can read while a chat turn is being written —
+without it, opening history mid-reply blocks on the writer. `synchronous` is
+NORMAL rather than FULL: FULL costs an fsync per commit, and the worst case it
+buys back is losing the last turn to an OS-level crash.
+
+### 12.3 The Postgres seam
+
+The store is meant to become Postgres once an agent harness needs it shared
+across processes. That is a one-file change *only* while nothing else writes a
+query, so `scripts/check.js` fails the build if any module other than `db.js`
+contains SQL or requires `node:sqlite`. `history.js` owns the shape of a
+conversation and the rules about it; `db.js` owns the SQL.
+
+Two things in the schema are not portable, and both are contained:
+
+| SQLite | Postgres |
+|---|---|
+| `INTEGER` epoch-millis columns | `BIGINT` |
+| `INTEGER PRIMARY KEY AUTOINCREMENT` | `BIGSERIAL` |
+| `messages_fts` (FTS5) | `tsvector` column + GIN index |
+| `MIN()` with bare columns picking the minimum row | `DISTINCT ON` |
+
+Everything else is standard SQL as written.
+
+### 12.4 Full-text search
+
+`messages_fts` is an external-content FTS5 table: it stores terms and a rowid
+pointing back at `messages`, so bodies are not duplicated on disk. Three
+triggers keep it in step, and because they fire on cascade deletes too, dropping
+a session cannot leave orphaned index rows.
+
+Two things about the query were found by testing, not by reading:
+
+- **User text cannot go into `MATCH` raw.** FTS5 reads `-`, `*`, `"` and `NEAR`
+  as operators, so searching for `gpt-4` is a syntax error rather than no
+  results. Every token is quoted to make it a literal and given a trailing `*`
+  so the list filters as you type.
+- **`rank` and `snippet()` are only valid in a SELECT that queries the index
+  directly.** Putting them under a `GROUP BY` to collapse hits per session gives
+  *"unable to use function snippet in the requested context"*. The fix is two
+  CTEs — one reading the auxiliary functions into ordinary columns, one
+  aggregating those — with `MATERIALIZED` to stop the optimiser folding them
+  back together and reintroducing the error.
+
+### 12.5 Writes
+
+`history.save()` is incremental and idempotent: it writes only the messages
+added since the last call, and the insert is keyed on `(session_id, seq)` with
+`ON CONFLICT DO NOTHING`. Persisting after every turn therefore costs one INSERT,
+and saving twice for the same turn — which happens when a request is aborted
+after the reply already landed — cannot duplicate a message.
+
+The save is in a `finally`, not on the success path. The user's question is
+appended before the request goes out, so a provider error or an aborted reply
+used to throw that question away — exactly the conversations you most want to
+find again.
+
+Failure is non-fatal throughout. If the database will not open, every function
+degrades to a no-op and the app still answers questions; an assistant that
+cannot remember beats an assistant that will not start.
+
+### 12.6 Migration
+
+The JSON folder is imported once, into an empty database only, so a later launch
+cannot duplicate it. The folder is then renamed to `history.imported` rather than
+deleted — if the import got something wrong, the originals are still there.

@@ -48,8 +48,10 @@ contextBridge.exposeInMainWorld('nimbus', {
   appInfo: () => ipcRenderer.invoke('app:info'),
 
   // ---- history ----
-  historyList: () => ipcRenderer.invoke('history:list'),
+  historyList: (opts) => ipcRenderer.invoke('history:list', opts),
   historySearch: (q) => ipcRenderer.invoke('history:search', q),
+  historyCount: () => ipcRenderer.invoke('history:count'),
+  historyRename: (id, title) => ipcRenderer.invoke('history:rename', id, title),
   historyLoad: (id) => ipcRenderer.invoke('history:load', id),
   historyNew: () => ipcRenderer.invoke('history:new'),
   historyDelete: (id) => ipcRenderer.invoke('history:delete', id),

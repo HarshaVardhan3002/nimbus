@@ -2,30 +2,27 @@
 /**
  * Conversation history.
  *
- * Until now every response wiped the previous one: `clearMessages()` on each
- * `llm:start`, nothing persisted, no context carried between turns. That makes
- * the app a one-shot query box rather than an assistant -- you could not ask a
- * follow-up, and closing the panel lost everything.
+ * Every response used to wipe the previous one: nothing persisted, no context
+ * carried between turns. That made the app a one-shot query box rather than an
+ * assistant -- you could not ask a follow-up, and closing the panel lost
+ * everything.
  *
- * Storage shape:
+ * Storage is SQLite (see src/db.js). This module owns the *shape* of a
+ * conversation and the rules about it; db.js owns the SQL. The split is what
+ * makes the eventual move to Postgres a one-file change.
  *
- *   userData/history/index.json        [{ id, title, createdAt, updatedAt, count, preview }]
- *   userData/history/<id>.json         { id, title, createdAt, updatedAt, messages: [...] }
+ * A session is a plain object while it is being spoken:
  *
- * One file per session rather than one big file, because the index is what the
- * list view reads and it must stay small no matter how much history exists.
- * Loading a session is then a single read of only that session.
+ *   { id, title, createdAt, updatedAt, messages: [{ role, content, ts, ... }] }
  *
- * Writes are atomic (temp + rename) for the same reason as settings: a
- * half-written session file that fails to parse would silently vanish.
+ * `save()` is incremental -- it writes only the messages added since the last
+ * call -- so persisting after every turn costs one INSERT rather than a rewrite
+ * of the whole conversation.
  */
 
-const fs = require('fs');
 const path = require('path');
 const { app } = require('electron');
-
-const DIR = path.join(app.getPath('userData'), 'history');
-const INDEX = path.join(DIR, 'index.json');
+const db = require('./db');
 
 // Turns fed back to the model as context. Chosen against the measured local
 // TTFT: every extra turn is prompt the model must re-read, and on a 622ms-warm
@@ -33,30 +30,41 @@ const INDEX = path.join(DIR, 'index.json');
 // Callers can override per request.
 const DEFAULT_CONTEXT_TURNS = 12;
 
-// Sessions kept on disk. Beyond this the oldest are pruned so the store cannot
-// grow without bound on a machine that runs this for months.
+// Sessions kept. Beyond this the oldest are pruned so the store cannot grow
+// without bound on a machine that runs this for months.
 const MAX_SESSIONS = 200;
 
-function ensureDir() {
-  try { fs.mkdirSync(DIR, { recursive: true }); } catch { /* ignore */ }
-}
+// How many rows the list view asks for at once.
+const PAGE = 60;
 
-function writeAtomic(file, obj) {
-  ensureDir();
-  const tmp = file + '.tmp';
-  try {
-    fs.writeFileSync(tmp, JSON.stringify(obj));
-    fs.renameSync(tmp, file);
-    return true;
-  } catch (e) {
-    console.error('[nimbus] history write failed:', e && e.message);
-    try { fs.unlinkSync(tmp); } catch { /* ignore */ }
-    return false;
+let ready = false;
+
+/**
+ * Open the database and absorb any JSON-era history.
+ *
+ * Returns false rather than throwing if the store is unusable: an assistant that
+ * cannot remember is still an assistant, and taking the app down over it would
+ * be the worse failure. Every function below degrades to a no-op in that case.
+ */
+function init() {
+  const res = db.open();
+  ready = res.ok;
+  if (ready) {
+    try { db.importLegacy(path.join(app.getPath('userData'), 'history')); }
+    catch (e) { console.error('[nimbus] history import failed:', e && e.message); }
   }
+  return ready;
 }
 
-function readJSON(file, fallback) {
-  try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return fallback; }
+function isReady() { return ready; }
+
+/** Anything that reaches SQLite is wrapped: a store error must not reach the UI. */
+function guard(fallback, fn) {
+  if (!ready) return fallback;
+  try { return fn(); } catch (e) {
+    console.error('[nimbus] history:', e && e.message);
+    return fallback;
+  }
 }
 
 function newId() {
@@ -76,83 +84,102 @@ function deriveTitle(text) {
   return cut.charAt(0).toUpperCase() + cut.slice(1);
 }
 
-// ---------------------------------------------------------------- index
-function loadIndex() {
-  const idx = readJSON(INDEX, []);
-  return Array.isArray(idx) ? idx : [];
-}
-
-function saveIndex(idx) {
-  return writeAtomic(INDEX, idx.slice(0, MAX_SESSIONS));
-}
-
-function sessionFile(id) {
-  // `id` is generated internally, but it is also accepted over IPC, so it is
-  // constrained rather than trusted -- a crafted id must not escape the folder.
-  const safe = String(id).replace(/[^a-z0-9]/gi, '');
-  return path.join(DIR, safe + '.json');
+/**
+ * How many of a session's messages are already on disk.
+ *
+ * Non-enumerable on purpose: the session object is sent to the renderer over
+ * IPC, and bookkeeping the UI has no use for should not be part of that payload.
+ */
+function persisted(session, set) {
+  if (set != null) {
+    Object.defineProperty(session, '__persisted', { value: set, writable: true, enumerable: false, configurable: true });
+    return set;
+  }
+  return session.__persisted || 0;
 }
 
 // ---------------------------------------------------------------- sessions
+/**
+ * A new session, in memory only.
+ *
+ * Nothing is written until the first message is saved, so opening the panel and
+ * closing it again does not leave an empty conversation in the list.
+ */
 function create(firstText) {
   const now = Date.now();
-  const session = {
-    id: newId(),
-    title: deriveTitle(firstText),
-    createdAt: now,
-    updatedAt: now,
-    messages: []
-  };
+  const session = { id: newId(), title: deriveTitle(firstText), createdAt: now, updatedAt: now, messages: [] };
+  persisted(session, 0);
   return session;
 }
 
 function load(id) {
-  const s = readJSON(sessionFile(id), null);
-  if (!s || !Array.isArray(s.messages)) return null;
-  return s;
+  return guard(null, () => {
+    const s = db.getSession(String(id));
+    if (s) persisted(s, s.messages.length);
+    return s;
+  });
 }
 
+/**
+ * Write the messages added since the last save.
+ *
+ * Idempotent: the insert is keyed on (session, seq) and ignores conflicts, so
+ * calling this twice for the same turn -- which happens when a request is
+ * aborted after the reply already landed -- cannot duplicate a message.
+ */
 function save(session) {
-  if (!session || !session.id) return false;
-  session.updatedAt = Date.now();
-  const ok = writeAtomic(sessionFile(session.id), session);
-  if (!ok) return false;
+  if (!session || !session.id || !session.messages.length) return false;
+  return guard(false, () => {
+    const from = persisted(session);
+    session.updatedAt = Date.now();
 
-  const idx = loadIndex().filter((e) => e.id !== session.id);
-  const last = session.messages[session.messages.length - 1];
-  idx.unshift({
-    id: session.id,
-    title: session.title,
-    createdAt: session.createdAt,
-    updatedAt: session.updatedAt,
-    count: session.messages.length,
-    preview: last ? String(last.content || '').replace(/\s+/g, ' ').slice(0, 90) : ''
+    db.tx(db._conn(), () => {
+      db.upsertSession(session);
+      const pending = [];
+      for (let i = from; i < session.messages.length; i++) {
+        const m = session.messages[i];
+        pending.push({
+          seq: i,
+          role: m.role,
+          content: m.content,
+          ts: m.ts || session.updatedAt,
+          meta: metaOf(m)
+        });
+      }
+      if (pending.length) db.insertMessages(session.id, pending);
+    });
+
+    persisted(session, session.messages.length);
+    db.pruneSessions(MAX_SESSIONS);
+    return true;
   });
+}
 
-  // Prune beyond the cap, deleting the files too so the folder does not keep
-  // growing after the index forgets about them.
-  const keep = idx.slice(0, MAX_SESSIONS);
-  for (const gone of idx.slice(MAX_SESSIONS)) {
-    try { fs.unlinkSync(sessionFile(gone.id)); } catch { /* ignore */ }
+/** Fields of a message that are annotation rather than content. */
+function metaOf(m) {
+  const out = {};
+  for (const k of ['mode', 'model', 'provider', 'tier']) {
+    if (m[k] != null) out[k] = m[k];
   }
-  saveIndex(keep);
-  return true;
+  return Object.keys(out).length ? out : null;
 }
 
 function remove(id) {
-  try { fs.unlinkSync(sessionFile(id)); } catch { /* ignore */ }
-  saveIndex(loadIndex().filter((e) => e.id !== id));
-  return true;
+  return guard(false, () => { db.deleteSession(String(id)); return true; });
 }
 
 function clearAll() {
-  try {
-    for (const f of fs.readdirSync(DIR)) {
-      if (f.endsWith('.json')) fs.unlinkSync(path.join(DIR, f));
-    }
-  } catch { /* ignore */ }
-  saveIndex([]);
-  return true;
+  return guard(false, () => { db.deleteAllSessions(); return true; });
+}
+
+function rename(id, title) {
+  return guard(false, () => {
+    const s = db.getSession(String(id));
+    if (!s) return false;
+    const clean = String(title || '').replace(/\s+/g, ' ').trim().slice(0, 120);
+    db.upsertSession({ id: s.id, title: clean || s.title, createdAt: s.createdAt, updatedAt: s.updatedAt });
+    return true;
+  });
 }
 
 function append(session, role, content, meta) {
@@ -184,35 +211,34 @@ function contextTurns(session, limit) {
     .map((m) => ({ role: m.role, text: m.content }));
 }
 
+/** Newest sessions first, with the counts and preview the list renders. */
+function list(opts) {
+  const o = opts || {};
+  const limit = Math.max(1, Math.min(MAX_SESSIONS, o.limit || PAGE));
+  return guard([], () => db.listSessions(limit, Math.max(0, o.offset || 0)));
+}
+
+function count() {
+  return guard(0, () => db.countSessions());
+}
+
 /**
- * Substring search across titles and message bodies.
+ * Full-text search over every message, plus title matches.
  *
- * Reads every session file, so it is linear in history size. At the 200-session
- * cap that is fine; a larger cap would want an inverted index instead.
+ * The JSON store did this by reading and parsing every session file on each
+ * keystroke. This is an index lookup, so it stays instant as history grows --
+ * which is what makes it usable as retrieval for an agent and not just a filter
+ * on a short list.
  */
 function search(query, limit = 40) {
-  const q = String(query || '').trim().toLowerCase();
-  const idx = loadIndex();
-  if (!q) return idx.slice(0, limit);
-
-  const out = [];
-  for (const entry of idx) {
-    if (out.length >= limit) break;
-    if (entry.title.toLowerCase().includes(q)) { out.push({ ...entry, hit: 'title' }); continue; }
-    const s = load(entry.id);
-    if (!s) continue;
-    const m = s.messages.find((x) => String(x.content || '').toLowerCase().includes(q));
-    if (m) {
-      const body = String(m.content);
-      const at = body.toLowerCase().indexOf(q);
-      out.push({ ...entry, hit: 'body', snippet: body.slice(Math.max(0, at - 30), at + 70).replace(/\s+/g, ' ') });
-    }
-  }
-  return out;
+  const q = String(query || '').trim();
+  if (!q) return list({ limit });
+  return guard([], () => db.searchMessages(q, limit));
 }
 
 module.exports = {
-  DIR, MAX_SESSIONS, DEFAULT_CONTEXT_TURNS,
-  create, load, save, remove, clearAll, append,
-  contextTurns, search, list: loadIndex, deriveTitle
+  MAX_SESSIONS, DEFAULT_CONTEXT_TURNS, PAGE,
+  init, isReady,
+  create, load, save, remove, clearAll, rename, append,
+  contextTurns, search, list, count, deriveTitle
 };

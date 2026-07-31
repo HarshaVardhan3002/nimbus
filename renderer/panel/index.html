@@ -15,10 +15,17 @@
 
     <!-- ============================== chat view ============================ -->
     <section id="view-chat" class="view">
-      <!-- One row: which conversation, and the two things you do to conversations. -->
+      <!--
+        One row: which conversation, and the two things you do to conversations.
+
+        The title is a button, not a label. Reaching past conversations used to
+        depend on recognising a speech-bubble glyph sitting next to a plus, and
+        the obvious thing to click when you want to change which conversation
+        you are in is the name of the one you are in.
+      -->
       <header id="chat-head">
-        <button id="history-btn" class="icon-btn" title="History"></button>
-        <div id="convo-title">New conversation</div>
+        <button id="history-btn" class="icon-btn" title="Recent conversations (Ctrl+H)"></button>
+        <button id="convo-title" title="Recent conversations (Ctrl+H)">New conversation</button>
         <button id="new-btn" class="icon-btn" title="New conversation (Ctrl+N)"></button>
       </header>
 
@@ -55,7 +62,9 @@
         <div class="s-title">History</div>
         <button id="h-close" class="icon-btn" title="Back"></button>
       </header>
-      <input id="h-search" type="text" placeholder="Search conversations" spellcheck="false" />
+      <!-- Searches message bodies, not just titles: the index is in SQLite, so
+           this stays instant as history grows. -->
+      <input id="h-search" type="text" placeholder="Search every conversation" spellcheck="false" />
       <div id="h-list" class="h-list"></div>
       <footer class="s-foot">
         <span id="h-count" class="s-hint"></span>

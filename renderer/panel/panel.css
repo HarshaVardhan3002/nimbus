@@ -487,12 +487,19 @@ body { width: 100%; }
   display: flex; align-items: center; gap: 6px;
   margin: -4px 0 10px;
 }
+/* A button that reads as a label until you approach it. Deference: the name of
+   the conversation is information first and a control second. */
 #convo-title {
   flex: 1; min-width: 0;
+  padding: 3px 6px;
+  border-radius: var(--r-ctl);
   font-size: 12.5px;
   color: var(--tx-2);
+  text-align: left;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  transition: background-color 120ms linear, color 120ms linear;
 }
+#convo-title:hover { background: var(--bg-raise); color: var(--tx-1); }
 
 /* ============================ history ============================ */
 #h-search, #provider-search {
@@ -517,7 +524,7 @@ body { width: 100%; }
   display: block;
   font-size: 13px; color: var(--tx-1);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  padding-right: 26px;
+  padding-right: 48px;   /* clears both row actions */
 }
 .h-item .m {
   display: block;
@@ -525,13 +532,28 @@ body { width: 100%; }
   font-size: 11px; color: var(--tx-3);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.h-item .kill {
-  position: absolute; top: 8px; right: 7px;
-  width: 20px; height: 20px; border-radius: 5px;
-  color: var(--tx-3); opacity: 0;
+/* Row actions. Hidden until the row is hovered or focused, so a list of
+   conversations reads as a list of conversations and not a row of buttons. */
+.h-tools {
+  position: absolute; top: 7px; right: 7px;
+  display: flex; gap: 2px;
+  opacity: 0;
+  transition: opacity 120ms linear;
 }
-.h-item:hover .kill { opacity: 1; }
+.h-item:hover .h-tools, .h-item:focus-within .h-tools { opacity: 1; }
+.h-tools .icon-btn {
+  width: 20px; height: 20px; border-radius: 5px;
+  color: var(--tx-3);
+}
+.h-tools .icon-btn:hover { background: var(--bg-raise); color: var(--tx-1); }
 .h-item .kill:hover { background: rgba(248,113,113,0.14); color: var(--danger); }
+
+.h-rename {
+  display: block; width: 100%;
+  margin: -2px 0 0;
+  padding: 2px 6px;
+  font-size: 13px;
+}
 
 /* ============================ settings tabs ============================ */
 .s-tabs {

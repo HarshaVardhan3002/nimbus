@@ -284,6 +284,36 @@ for (const id of ['ollama', 'lmstudio', 'openai', 'anthropic', 'gemini', 'nvidia
 }
 ok.push('registry: all built-in providers present in both registry and store defaults');
 
+// ------------------------------------------------- 7b. storage seam
+/**
+ * All SQL lives in src/db.js.
+ *
+ * The store is SQLite now and is meant to become Postgres when an agent harness
+ * needs to share it across processes. That port is a one-file change only for as
+ * long as no other module writes a query -- and the natural place for the first
+ * leak is history.js, which sits directly on top of it.
+ */
+{
+  // Case-sensitive on purpose. SQL here is written in upper case, while the
+  // lower-case spellings are ordinary JavaScript: a case-insensitive `SELECT`
+  // flags every `element.select()` in the renderer.
+  const sqlUsers = jsFiles.filter((f) => {
+    if (f === 'src/db.js' || f.startsWith('scripts/')) return false;
+    return /\b(SELECT\b[\s\S]{0,400}?\bFROM|INSERT\s+INTO|DELETE\s+FROM|CREATE\s+TABLE|UPDATE\s+\w+\s+SET)\b/
+      .test(stripComments(read(f)));
+  });
+  if (sqlUsers.length) {
+    problems.push('STORAGE: SQL outside src/db.js in ' + sqlUsers.join(', ')
+      + ' — keep queries in the storage module so the Postgres port stays one file');
+  }
+
+  const sqliteUsers = jsFiles.filter((f) => f !== 'src/db.js' && /require\('node:sqlite'\)/.test(read(f)));
+  if (sqliteUsers.length) {
+    problems.push('STORAGE: ' + sqliteUsers.join(', ') + ' requires node:sqlite directly; go through src/db.js');
+  }
+  ok.push('storage: SQL and the sqlite driver are confined to src/db.js');
+}
+
 // ---------------------------------------------------------------- report
 const line = (s) => process.stdout.write(s + '\n');
 line('');
