@@ -90,27 +90,62 @@
       </nav>
 
       <div class="s-scroll">
-        <!-- Routing: each reasoning tier binds its own provider AND model. -->
+        <!--
+          Routing: each reasoning tier binds its own provider AND model.
+
+          This is the ONLY place a chat model is chosen. The provider section
+          below configures how to reach a server; it does not pick what answers.
+          There used to be a second Fast/Smart pair down there, which was not
+          merely redundant -- it was the field the capability code read, so the
+          app described the model you route to using the capabilities of a model
+          you never called.
+        -->
         <div class="s-group" data-tab="models">
-          <div class="s-label">Routing</div>
+          <div class="s-label">Routing <span class="s-hint">what answers, and how well</span></div>
           <div class="route-row">
             <span class="route-tier">Fast</span>
             <select id="route-fast-provider"></select>
-            <input id="route-fast-model" type="text" spellcheck="false" list="model-list" placeholder="model" />
+            <input id="route-fast-model" type="text" spellcheck="false" list="model-list-fast" placeholder="model" />
           </div>
+          <datalist id="model-list-fast"></datalist>
           <div class="route-hint" id="route-fast-hint"></div>
+          <div class="s-row" data-adv id="row-fast-vision">
+            <span>Images</span>
+            <select id="f-fast-vision" data-tier="fast" class="vision-override">
+              <option value="auto">Detect automatically</option>
+              <option value="yes">This model can see images</option>
+              <option value="no">Text only</option>
+            </select>
+          </div>
+
           <div class="route-row">
             <span class="route-tier smart">Smart</span>
             <select id="route-smart-provider"></select>
-            <input id="route-smart-model" type="text" spellcheck="false" list="model-list" placeholder="model" />
+            <input id="route-smart-model" type="text" spellcheck="false" list="model-list-smart" placeholder="model" />
           </div>
+          <datalist id="model-list-smart"></datalist>
           <div class="route-hint" id="route-smart-hint"></div>
-          <div class="route-row">
+          <div class="s-row" data-adv id="row-smart-vision">
+            <span>Images</span>
+            <select id="f-smart-vision" data-tier="smart" class="vision-override">
+              <option value="auto">Detect automatically</option>
+              <option value="yes">This model can see images</option>
+              <option value="no">Text only</option>
+            </select>
+          </div>
+
+          <!--
+            A fallback for one case only: your chat model cannot see and you
+            want screen questions answered anyway. Nimbus now detects capability
+            per model, so the common setup never needs this.
+          -->
+          <div class="route-row" data-adv>
             <span class="route-tier">Vision</span>
             <select id="route-vision-provider"></select>
-            <input id="route-vision-model" type="text" spellcheck="false" list="model-list" placeholder="optional" />
+            <input id="route-vision-model" type="text" spellcheck="false" list="model-list-vision" placeholder="optional" />
           </div>
-          <div class="route-hint" id="route-vision-hint"></div>
+          <datalist id="model-list-vision"></datalist>
+          <div class="route-hint" id="route-vision-hint" data-adv></div>
           <div class="s-hint" id="route-warning"></div>
         </div>
 
@@ -122,7 +157,7 @@
         </div>
 
         <div class="s-group" data-tab="models" id="provider-detail">
-          <div class="s-label">Connection</div>
+          <div class="s-label" id="provider-detail-label">Connection</div>
           <div class="s-row" id="row-baseurl">
             <span>Base URL</span>
             <input id="f-baseurl" type="text" spellcheck="false" placeholder="http://127.0.0.1:11434/v1" />
@@ -131,44 +166,20 @@
             <span>API key</span>
             <input id="f-key" type="password" spellcheck="false" autocomplete="off" />
           </div>
-          <div class="s-label">Models</div>
-          <div class="s-row">
-            <span>Fast</span>
-            <input id="f-fast" type="text" spellcheck="false" list="model-list" />
-          </div>
-          <div class="s-row">
-            <span>Smart</span>
-            <input id="f-smart" type="text" spellcheck="false" list="model-list" />
-          </div>
-          <datalist id="model-list"></datalist>
           <div class="s-row inline">
             <button id="refresh-models" class="ghost-btn small"><span class="ic"></span><span>Refresh model list</span></button>
-            <span id="discover-status" class="s-hint"></span>
-          </div>
-          <div class="s-hint" id="model-meta"></div>
-
-          <!--
-            End-to-end check. "Refresh model list" only proves the server
-            answers /v1/models; this actually generates a token with the model
-            and key that are configured here, which is the thing that was
-            failing silently.
-          -->
-          <div class="s-row inline">
+            <!--
+              End-to-end check. "Refresh model list" only proves the server
+              answers /v1/models; this actually generates a token with the model
+              and key that are configured here, which is the thing that was
+              failing silently.
+            -->
             <button id="test-provider" class="ghost-btn small"><span class="ic"></span><span>Test connection</span></button>
-            <span id="test-status" class="s-hint"></span>
           </div>
+          <div id="discover-status" class="s-hint"></div>
+          <div id="test-status" class="s-hint"></div>
 
-          <!--
-            Everything below is an override for something Nimbus already worked
-            out on its own: the display name, whether the endpoint wants a key,
-            whether it is local, and whether the model can see. Showing all four
-            by default put eleven controls on screen to configure what is
-            usually two, so they are disclosed rather than displayed.
-          -->
-          <button id="provider-more" class="disclosure" aria-expanded="false" aria-controls="provider-advanced">
-            <span class="ic"></span><span>Advanced</span>
-          </button>
-          <div id="provider-advanced" class="hidden">
+          <div id="provider-advanced" data-adv>
             <div class="s-row">
               <span>Display name</span>
               <input id="f-label" type="text" spellcheck="false" placeholder="e.g. Lemonade box" />
@@ -183,10 +194,6 @@
                 <span>Runs on this machine or LAN <em>(enables keep-warm pings and local error hints)</em></span>
               </label>
             </div>
-            <label class="s-check">
-              <input id="f-vision" type="checkbox" />
-              <span>Model can see images <em>(needed for screen questions)</em></span>
-            </label>
           </div>
         </div>
 
@@ -248,12 +255,14 @@
 
         <div class="s-group" data-tab="voice">
           <div class="s-label">Listening</div>
-          <div class="s-row">
+          <!-- VAD tuning. Correct out of the box for a normal room; exposed for
+               a loud one, and only to someone who went looking. -->
+          <div class="s-row" data-adv>
             <span>Sensitivity</span>
             <input id="f-vad" type="range" min="2" max="40" step="1" />
             <span id="vad-val" class="s-hint"></span>
           </div>
-          <div class="s-row">
+          <div class="s-row" data-adv>
             <span>End of speech</span>
             <input id="f-hangover" type="range" min="200" max="1500" step="50" />
             <span id="hangover-val" class="s-hint"></span>
@@ -289,8 +298,8 @@
             <span id="zoom-val" class="s-hint"></span>
           </div>
 
-          <div id="native-status" class="s-hint"></div>
-          <div id="build-status" class="s-hint"></div>
+          <div id="native-status" class="s-hint" data-adv></div>
+          <div id="build-status" class="s-hint" data-adv></div>
         </div>
 
         <div class="s-group" data-tab="privacy">
@@ -302,22 +311,37 @@
           </label>
           <div id="stealth-status" class="s-hint"></div>
 
-          <div class="s-label">Conversation history</div>
-          <div class="s-row">
+          <div class="s-label" data-adv>Conversation history</div>
+          <div class="s-row" data-adv>
             <span>Context</span>
             <input id="f-ctx" type="range" min="0" max="30" step="2" />
             <span id="ctx-val" class="s-hint"></span>
           </div>
-          <div class="s-hint">Prior turns sent with each message. More context means better follow-ups and a slower first token.</div>
+          <div class="s-hint" data-adv>Prior turns sent with each message. More context means better follow-ups and a slower first token.</div>
 
-          <div class="s-label">Reply length</div>
-          <div class="s-row">
+          <div class="s-label" data-adv>Reply length</div>
+          <div class="s-row" data-adv>
             <span>Ceiling</span>
             <input id="f-maxtok" type="range" min="512" max="16384" step="512" />
             <span id="maxtok-val" class="s-hint"></span>
           </div>
-          <div class="s-hint">Maximum tokens in one answer. Reasoning models spend this budget thinking before they write, so a low ceiling can leave them with no room to answer at all.</div>
+          <div class="s-hint" data-adv>Maximum tokens in one answer. Reasoning models spend this budget thinking before they write, so a low ceiling can leave them with no room to answer at all.</div>
         </div>
+
+        <!--
+          One gate for the whole screen, not a per-section disclosure.
+
+          Every section had, or wanted, its own "Advanced" chevron, so the same
+          idea was expressed four times and a user hunting for one knob had four
+          places to look. This sits below every section on every tab: the
+          default view is the settings needed to reach the goal, and one switch
+          reveals the overrides, tuning and diagnostics on all of them at once.
+        -->
+        <label class="s-check adv-gate">
+          <input id="f-advanced" type="checkbox" />
+          <span>Show advanced settings
+            <em>Capability overrides, vision routing, VAD tuning, context depth, reply ceiling and build diagnostics.</em></span>
+        </label>
       </div>
 
       <footer class="s-foot">

@@ -189,10 +189,34 @@ would be silently blocked.
 
 ### Vision gating
 
-Local checkpoints are usually text-only, so `vision` defaults to `false` for
-Ollama and LM Studio. When a screen-capture mode runs against a text-only
-model, Nimbus skips the screenshot and says so, rather than silently answering a
-screen question blind.
+Vision is a property of a **model**, not of a provider. One OpenAI-compatible
+endpoint routinely serves a vision model and a text-only one side by side, so a
+single per-provider flag cannot describe it — and when it was tried, a capable
+model was stamped text-only and every screen question went out blind.
+
+`settings.modelInfo` caches capabilities keyed `"<providerId>::<modelId>"`.
+`providers.visionFor()` answers **true / false / null**, and `null` genuinely
+means unknown:
+
+| source   | how it was learned                        | rank |
+| -------- | ----------------------------------------- | ---- |
+| `user`   | an override in advanced settings          | 3    |
+| `probe`  | a real request the model accepted or not  | 2    |
+| `server` | declared by `/v1/models`                  | 1    |
+| `guess`  | the model name looked like it             | 0    |
+
+Weaker evidence cannot overwrite stronger, except through a user-initiated
+Refresh, which passes `override` so a stale probe result can be cleared.
+
+The resulting flow is optimistic: a screen question first asks the server what
+the model can do (usually decisive, and cached), attaches the screenshot unless
+the model is *known* blind, and — if the request is rejected for the image —
+retries once without it and records `vision: false` for that model alone. A
+wrong guess therefore costs one retry once; the old behaviour cost a wrong
+answer every time, silently.
+
+`routes.vision` remains as an explicit hand-off for the case where the chat
+model genuinely cannot see and screen questions should go elsewhere.
 
 Typed questions never carry a screenshot at all (`MODES.ask.needsScreen` is
 `false`). They used to, which meant every self-contained question paid for a

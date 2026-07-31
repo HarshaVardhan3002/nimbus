@@ -66,8 +66,13 @@ const BUILTIN = {
     baseURL: 'http://127.0.0.1:11434/v1',
     needsKey: false,
     local: true,
-    // Most local checkpoints are text-only. Default off so a screen-capture
-    // mode does not silently 400 on a model that cannot accept an image.
+    /**
+     * Provider-level vision is an AFFIRMATIVE hint only: `true` means every
+     * model this provider serves can see. There is no such thing as a provider
+     * whose models all cannot -- Ollama serves llava and llama3.2 from the same
+     * endpoint -- so `false` here means "not all of them", i.e. ask per model.
+     * See visionFor().
+     */
     vision: false,
     defaults: { fast: 'llama3.2', smart: 'qwen2.5:14b' }
   },
@@ -142,8 +147,9 @@ function resolve(settings, id) {
 
   // A user-set override wins over the descriptor default.
   const baseURL = (models.baseURL || p.baseURL || null);
-  const vision = typeof models.vision === 'boolean' ? models.vision : p.vision;
-  const contextWindow = typeof models.contextWindow === 'number' ? models.contextWindow : null;
+  // Capabilities belong to the MODEL, never the provider. See visionFor().
+  const vision = visionFor(settings, p.id, model);
+  const contextWindow = contextWindowFor(settings, p.id, model);
 
   // A user-supplied display name wins. Pointing the built-in "Ollama" slot at an
   // unrelated OpenAI-compatible server made every error message read
@@ -238,6 +244,12 @@ function resolveTier(settings, tier) {
   return {
     ...base,
     model,
+    // resolve() answered for the provider's own fast/smart entry, which is a
+    // DIFFERENT model from the one this route actually calls. Re-asking here is
+    // what stops one provider's text-only model from being described by the
+    // capabilities of another.
+    vision: visionFor(settings, providerId, model),
+    contextWindow: contextWindowFor(settings, providerId, model),
     tier: route.tier,
     routed: !!route.provider,
     ready: (base.needsKey ? base.hasKey : true) && !!model,
@@ -371,6 +383,92 @@ function classifyModel(m) {
 }
 
 /**
+ * Per-model capabilities.
+ *
+ * Vision used to be a single boolean per PROVIDER. That cannot be right: one
+ * OpenAI-compatible endpoint commonly serves a vision model and a text-only one
+ * side by side, and the settings UI wrote the flag from whichever model happened
+ * to be selected in an unrelated field. The observed failure was exact -- a
+ * provider serving both gemma (sees) and deepseek (does not) was stamped
+ * `vision: false`, so every screen question went out without the screenshot and
+ * the model answered a question it could not see.
+ *
+ * Capabilities are therefore keyed by provider AND model. `settings.modelInfo`
+ * is a learned cache: what a server declared in /v1/models, what a request
+ * proved at runtime, or what the user set by hand.
+ */
+function capabilityKey(providerId, modelId) {
+  return `${providerId}::${String(modelId || '').trim()}`;
+}
+
+function modelInfoFor(settings, providerId, modelId) {
+  const model = String(modelId || '').trim();
+  if (!model) return null;
+  return ((settings && settings.modelInfo) || {})[capabilityKey(providerId, model)] || null;
+}
+
+/**
+ * Can this exact model accept an image?
+ *
+ *   true  — known to see.
+ *   false — known NOT to see; a screenshot must not be attached.
+ *   null  — UNKNOWN, which is not the same as no.
+ *
+ * The tri-state is the whole point. Collapsing unknown to false is what made
+ * vision feel broken: a capable model stayed blind until the user found a
+ * checkbox, and the checkbox was then overwritten. Callers treat null as
+ * "attach it and find out" -- a model that cannot see rejects the request, and
+ * that rejection is recorded here, so the wrong guess costs one retry once.
+ */
+function visionFor(settings, providerId, modelId) {
+  const info = modelInfoFor(settings, providerId, modelId);
+  if (info && typeof info.vision === 'boolean') return info.vision;
+  // Names are evidence FOR vision and never against it: "gemma-4-31b-it" looks
+  // text-only and is not, which is precisely the case that broke.
+  if (VISION_NAME.test(String(modelId || ''))) return true;
+  const p = get(settings, providerId);
+  if (p && p.vision === true) return true;
+  return null;
+}
+
+function contextWindowFor(settings, providerId, modelId) {
+  const info = modelInfoFor(settings, providerId, modelId);
+  return info && typeof info.contextWindow === 'number' ? info.contextWindow : null;
+}
+
+/**
+ * Fold what we just learned about a model into a settings patch.
+ *
+ * `source` records how we know, so weaker evidence cannot quietly undo stronger:
+ *
+ *   user   — said so by hand. Final.
+ *   probe  — a real request the model accepted or rejected. Ground truth, and
+ *            therefore stronger than a claim: servers do misdeclare.
+ *   server — /v1/models said so.
+ *   guess  — the model name looked like it.
+ *
+ * `override` exists for a user-initiated refresh, which must be able to clear a
+ * stale probe result: a Refresh button that cannot change the answer is broken.
+ */
+const INFO_RANK = { guess: 0, server: 1, probe: 2, user: 3 };
+
+function learnModel(settings, providerId, modelId, facts, source = 'server', { override = false } = {}) {
+  const model = String(modelId || '').trim();
+  if (!providerId || !model) return null;
+  const key = capabilityKey(providerId, model);
+  const prev = ((settings && settings.modelInfo) || {})[key] || {};
+  if (!override && INFO_RANK[prev.source] > INFO_RANK[source]) return null;
+
+  const next = { ...prev, source };
+  if (typeof facts.vision === 'boolean') next.vision = facts.vision;
+  if (typeof facts.contextWindow === 'number') next.contextWindow = facts.contextWindow;
+  // Nothing new to say is not a write.
+  if (next.vision === prev.vision && next.contextWindow === prev.contextWindow
+      && prev.source === source) return null;
+  return { modelInfo: { [key]: next } };
+}
+
+/**
  * Turn an HTTP status from a bare endpoint into the sentence a user can act on.
  * "HTTP 401 from https://.../models" tells you nothing about which of the two
  * fields on screen is wrong.
@@ -491,5 +589,6 @@ async function discoverModels(settings, id, { timeoutMs = 6000, force = false } 
 module.exports = {
   BUILTIN, BUILTIN_ORDER, NO_KEY, OPENAI_COMPATIBLE,
   list, get, labelOf, resolve, resolveTier, routeFor, TIERS, ROUTE_TIERS,
+  capabilityKey, modelInfoFor, visionFor, contextWindowFor, learnModel,
   discoverModels, clearDiscoveryCache, classifyModel, readContextWindow, readModalities, httpHint
 };

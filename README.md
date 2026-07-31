@@ -131,9 +131,11 @@ All model setup is available in the Settings view; no `.env` file is required.
 | Anthropic | Enter an API key and model names. | Anthropic API |
 | Gemini | Enter a Google API key and model names. | Gemini API |
 | NVIDIA NIM | Enter an NVIDIA API key and model names. | `https://integrate.api.nvidia.com/v1` |
-| Custom | Add an OpenAI-compatible endpoint, then declare whether it needs a key and can see images. | Your endpoint |
+| Custom | Add an OpenAI-compatible endpoint and, if it needs one, a key. | Your endpoint |
 
-Nimbus has independent **Fast**, **Smart**, and optional **Vision** routes. That means a quick local model can handle routine prompts while a cloud model handles more demanding work. A screen request is automatically redirected to the Vision route when the active chat model is configured as text-only.
+Nimbus has independent **Fast**, **Smart**, and optional **Vision** routes. That means a quick local model can handle routine prompts while a cloud model handles more demanding work. Whether a model can see images is detected per model — from what the server declares, or from what a request proves — so screen questions work without configuring anything. A screen request is redirected to the Vision route only when the active chat model is known to be text-only.
+
+Settings show what is needed to get running. **Show advanced settings**, at the bottom of the settings screen, reveals the rest on every tab at once: capability overrides, the Vision route, VAD tuning, context depth, the reply ceiling, and build diagnostics.
 
 **Test connection** under Models answers the only question that matters after editing an endpoint: will this provider actually work? It checks that the server is reachable, that the key is accepted, that the model name exists on that server, and that a real generation streams back — then reports the reply, total latency, and time to first token. A provider that connects but returns nothing usable (for example a reasoning model that spends the whole token budget thinking) is reported as a warning with the specific cause, not as a success.
 
@@ -312,7 +314,7 @@ This is why changing the Smart route does not alter the Fast route. A local endp
 
 ### 3. Screen capture and vision safety
 
-[`src/screen.js`](src/screen.js) captures the relevant display in the main process and bounds the image edge before it reaches a provider. The request runner refuses to attach a screenshot to models flagged as text-only. If a model's advertised capability was wrong, the retry mechanism in `src/llm.js` avoids turning a text answer into a total failure and persists `vision: false` for that provider afterward.
+[`src/screen.js`](src/screen.js) captures the relevant display in the main process and bounds the image edge before it reaches a provider. Capability is tracked per model, not per provider: Nimbus asks the server what the selected model accepts, attaches the screenshot unless that model is known to be text-only, and if the request is rejected for the image, the retry mechanism in `src/llm.js` answers from text instead of failing outright and records `vision: false` for that one model.
 
 This is intentional behavior, not a cosmetic setting: the app would rather give a text-grounded response than silently ask a model to inspect an image it cannot process.
 

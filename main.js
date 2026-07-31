@@ -183,6 +183,43 @@ function maybeWake(text, channel) {
   }
 }
 
+/**
+ * What can this exact model do, according to the server that serves it?
+ *
+ * Returns true / false / null, where null genuinely means unknown. Most
+ * OpenAI-compatible servers publish input modalities in /v1/models, so this
+ * usually settles vision without any failed request at all -- and the answer is
+ * cached in settings, so it is asked once per model rather than once per turn.
+ *
+ * Best-effort by design: a server that is down or says nothing leaves the answer
+ * unknown, and the caller proceeds optimistically rather than refusing.
+ */
+async function learnCapabilities(providerId, modelId) {
+  const model = (modelId || '').trim();
+  if (!providerId || !model) return null;
+
+  const cached = providers.modelInfoFor(store.getSettings(), providerId, model);
+  // Already settled by the server or by hand; do not re-ask.
+  if (cached && (cached.source === 'server' || cached.source === 'user' || cached.source === 'probe')) {
+    return typeof cached.vision === 'boolean' ? cached.vision : null;
+  }
+
+  try {
+    const d = await providers.discoverModels(store.getSettings(), providerId, { timeoutMs: 2500 });
+    const m = d && d.ok && (d.models || []).find((x) => x.id === model);
+    if (m && m.capabilitiesKnown) {
+      const patch = providers.learnModel(
+        store.getSettings(), providerId, model,
+        { vision: !!m.vision, contextWindow: m.contextWindow || undefined }, 'server'
+      );
+      if (patch) broadcast('settings:changed', store.setSettings(patch));
+      return !!m.vision;
+    }
+  } catch { /* discovery is optional; an unknown answer is still usable */ }
+
+  return providers.visionFor(store.getSettings(), providerId, model);
+}
+
 // ---------------------------------------------------------------- features
 async function runFeature(mode, userText) {
   if (state.busy) return;
@@ -214,24 +251,33 @@ async function runFeature(mode, userText) {
       /**
        * Vision hand-off.
        *
-       * If the tier's model cannot accept an image, look for a configured
-       * vision route and send THIS request there instead of dropping the
-       * screenshot. That keeps a fast text-only local model as the default
-       * while screen questions still get answered by something that can see.
+       * Order matters. Ask the server what this model can do FIRST -- most
+       * OpenAI-compatible servers declare input modalities, which settles the
+       * question without a failed request -- and only then decide whether a
+       * hand-off is needed. The old code asked a per-provider boolean that no
+       * model owned, so a vision-capable model was declared blind and the
+       * hand-off could not rescue it either.
+       *
+       * Only a KNOWN-blind model triggers the hand-off. Unknown means attach
+       * and find out; see src/llm.js.
        */
-      if (!llm.vision) {
+      let sees = await learnCapabilities(llm.provider, llm.model);
+
+      if (sees === false) {
         const vr = (settings.routes || {}).vision || {};
         if (vr.provider && (vr.model || '').trim()) {
-          const vlm = createLLM(settings, 'vision');
-          if (vlm.ready && vlm.vision) {
+          const vlm = createLLM(store.getSettings(), 'vision');
+          if (vlm.ready && (await learnCapabilities(vlm.provider, vlm.model)) !== false) {
             activeLLM = vlm;
+            sees = true;
             notify('Screen question routed to ' + vlm.label + ' / ' + vlm.model + ' for vision.', 'info');
           }
         }
       }
 
-      if (!activeLLM.vision) {
-        notify('"' + activeLLM.model + '" is text-only, so no screenshot was attached. Set a Vision route in Settings, or tick "Model can see images".', 'warn');
+      if (sees === false) {
+        notify('"' + activeLLM.model + '" cannot accept images, so no screenshot was attached. '
+          + 'Set a Vision route in Settings to send screen questions to a model that can see.', 'warn');
       } else {
         try {
           imageDataUrl = await captureScreenshot();
@@ -302,18 +348,20 @@ async function runFeature(mode, userText) {
       onNotice: (n) => {
         notify(n.message, n.level || 'info');
         /**
-         * The retry just proved this model cannot take an image. Persist that
-         * so the next screen question skips the screenshot instead of paying
-         * for the same failed round trip again.
+         * The retry just proved THIS MODEL cannot take an image. Record it
+         * against the model, so the next screen question skips the screenshot
+         * instead of paying for the same failed round trip -- and so the other
+         * models on the same endpoint keep their own capabilities.
          *
-         * Only ever flips the flag OFF. Turning it back on is a user decision,
-         * because a single success does not prove capability.
+         * Ranked 'probe': a request that failed is weaker evidence than a
+         * server's declaration and than the user saying so by hand, and
+         * providers.learnModel will not let it overwrite either.
          */
-        if (n.visionFailed && n.provider) {
-          const cur = store.getSettings();
-          const models = Object.assign({}, (cur.models || {})[n.provider], { vision: false });
-          const next = store.setSettings({ models: { [n.provider]: models } });
-          broadcast('settings:changed', next);
+        if (n.visionFailed && n.provider && n.model) {
+          const patch = providers.learnModel(
+            store.getSettings(), n.provider, n.model, { vision: false }, 'probe'
+          );
+          if (patch) broadcast('settings:changed', store.setSettings(patch));
         }
       }
     });
@@ -405,8 +453,32 @@ function registerIPC() {
   });
   // `force` comes from the Refresh button: a refresh that can return a cached
   // answer is not a refresh. Ordinary UI re-reads leave it unset and hit cache.
-  ipcMain.handle('providers:discover', (_e, id, opts) =>
-    providers.discoverModels(store.getSettings(), id, { force: !!(opts && opts.force) }));
+  ipcMain.handle('providers:discover', async (_e, id, opts) => {
+    const force = !!(opts && opts.force);
+    const res = await providers.discoverModels(store.getSettings(), id, { force });
+    /**
+     * Fold every declared capability into the per-model cache while we have it.
+     *
+     * Doing it here means opening Settings teaches the app about the whole
+     * endpoint at once, so the first screen question already knows the answer.
+     * A forced refresh overrides a previous runtime probe -- that is the only
+     * way a model wrongly marked blind can be un-marked from the UI.
+     */
+    if (res && res.ok) {
+      let patch = null;
+      for (const m of res.models || []) {
+        if (!m.capabilitiesKnown) continue;
+        const one = providers.learnModel(
+          store.getSettings(), id, m.id,
+          { vision: !!m.vision, contextWindow: m.contextWindow || undefined },
+          'server', { override: force }
+        );
+        if (one) patch = { modelInfo: { ...(patch || {}).modelInfo, ...one.modelInfo } };
+      }
+      if (patch) broadcast('settings:changed', store.setSettings(patch));
+    }
+    return res;
+  });
 
   /**
    * One button that answers "is this provider actually usable?".

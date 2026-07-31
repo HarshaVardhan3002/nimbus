@@ -355,6 +355,23 @@ body { width: 100%; }
 .s-check input { accent-color: var(--accent); margin-top: 1px; }
 .s-check em { color: var(--tx-dim); font-style: normal; }
 
+/**
+ * Progressive disclosure, gated once for the whole screen.
+ *
+ * `display: none` rather than visibility or height, so a hidden control takes
+ * no space and cannot be tabbed into -- a range slider that is invisible but
+ * still in the focus order is worse than one that is simply absent.
+ */
+.s-scroll:not(.adv) [data-adv] { display: none !important; }
+
+.adv-gate {
+  margin: 4px 0 10px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+  color: var(--tx-dim);
+}
+.adv-gate em { display: block; margin-top: 2px; }
+
 /* ---- per-tier routing ---- */
 .route-row {
   display: flex; align-items: center; gap: 8px; margin-bottom: 5px;

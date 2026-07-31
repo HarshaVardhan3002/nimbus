@@ -18,13 +18,13 @@
   let settings = null;
   let providerList = [];
   let editingProvider = null;
-  // Which provider the Advanced block's open/closed state was last decided for.
-  // Tracked so a manual collapse survives re-renders of the same provider.
-  let advancedFor = null;
   // Which stored conversation is on screen, so a rename in the history list can
   // update the header without a round trip to ask which one that is.
   let currentId = null;
-  let lastDiscovery = { models: [], classified: false };
+  // Last model list per provider id. Routes point at different providers, so one
+  // shared "last discovery" described whichever endpoint was asked most recently
+  // and was wrong for every other row on screen.
+  const discoveryFor = {};
   // 'hold' | 'latch' | 'unbound', from native:status. Decides whether the
   // push-to-talk row can honestly call itself hold-to-talk.
   let pttMode = 'hold';
@@ -54,7 +54,6 @@
   $('#test-provider .ic').innerHTML = icon('zap', { size: 12 });
   $('#refresh-stt .ic').innerHTML = icon('mic', { size: 12 });
   $('#ptt-reset .ic').innerHTML = icon('refresh-cw', { size: 12 });
-  $('#provider-more .ic').innerHTML = icon('chevron-right', { size: 13 });
 
   // ---- viewport-independent layout caps ------------------------------------
   function applyAvailableHeight(h) {
@@ -591,7 +590,11 @@
         sel.appendChild(o);
       }
       inp.value = r.model || '';
+      syncVisionOverride(tier);
       updateRouteHint(tier);
+      // Populate this route's suggestions from ITS provider. One shared datalist
+      // offered Ollama's models while editing an OpenAI route.
+      discoverForRoute(tier);
     }
     $('#route-warning').textContent = '';
     app.warmthStatus().then((w) => {
@@ -601,6 +604,39 @@
         reportSize();
       }
     }).catch(() => {});
+  }
+
+  /**
+   * What is known about the model on a route, without re-implementing the
+   * detection rules.
+   *
+   * Reads the same two sources the main process writes: the learned per-model
+   * cache in settings, and whatever the provider last declared. Returns
+   * true/false/null, where null means genuinely unknown -- and unknown is shown
+   * as unknown, not as "no". Claiming a model is text-only when nobody has said
+   * so is what sent screen questions out blind.
+   */
+  function knownModel(providerId, modelId) {
+    const model = (modelId || '').trim();
+    if (!providerId || !model) return null;
+    const info = (settings.modelInfo || {})[providerId + '::' + model];
+    const d = discoveryFor[providerId];
+    const listed = d && d.ok ? (d.models || []).find((x) => x.id === model) : null;
+    const vision = info && typeof info.vision === 'boolean' ? info.vision
+      : (listed && listed.capabilitiesKnown ? !!listed.vision : null);
+    return {
+      vision,
+      source: info && info.source ? info.source : (listed && listed.capabilitiesKnown ? 'server' : null),
+      contextWindow: (info && info.contextWindow) || (listed && listed.contextWindow) || null,
+      reasoning: !!(listed && listed.reasoning),
+      listed: !!listed
+    };
+  }
+
+  function describeVision(v) {
+    if (v === true) return 'sees images';
+    if (v === false) return 'text only';
+    return 'image support detected on first use';
   }
 
   function updateRouteHint(tier) {
@@ -616,13 +652,84 @@
       return;
     }
 
-    const bits = [];
-    if (!inp.value.trim()) bits.push('no model chosen');
-    if (p.needsKey && !((settings.apiKeys || {})[p.id] || '').trim()) bits.push('needs an API key');
-    hint.textContent = bits.length
-      ? bits.join(' · ')
-      : (p.local ? 'local, kept warm automatically' : 'remote endpoint');
-    hint.classList.toggle('bad', bits.length > 0);
+    const bad = [];
+    if (!inp.value.trim()) bad.push('no model chosen');
+    if (p.needsKey && !((settings.apiKeys || {})[p.id] || '').trim()) bad.push('needs an API key');
+    if (bad.length) {
+      hint.textContent = bad.join(' · ');
+      hint.classList.add('bad');
+      return;
+    }
+
+    // Capability belongs next to the model it describes. This is the line that
+    // answers "why can it not see my screen?" without opening anything.
+    const k = knownModel(p.id, inp.value);
+    const bits = [p.local ? 'local, kept warm' : 'remote'];
+    if (k.contextWindow) bits.push(fmtCtx(k.contextWindow));
+    if (k.reasoning) bits.push('reasoning');
+    if (tier !== 'vision') bits.push(describeVision(k.vision));
+    hint.textContent = bits.join(' · ');
+    hint.classList.remove('bad');
+  }
+
+  /** Reflect the stored override, if any, in the advanced tri-state select. */
+  function syncVisionOverride(tier) {
+    const sel = $('#f-' + tier + '-vision');
+    if (!sel) return;
+    const r = (settings.routes || {})[tier] || {};
+    const info = (settings.modelInfo || {})[(r.provider || '') + '::' + (r.model || '').trim()];
+    // Only a deliberate override selects yes/no. A value Nimbus worked out for
+    // itself stays on "detect automatically", so re-detection is never blocked
+    // by a setting the user did not make.
+    sel.value = (info && info.source === 'user' && typeof info.vision === 'boolean')
+      ? (info.vision ? 'yes' : 'no')
+      : 'auto';
+  }
+
+  async function persistVisionOverride(tier) {
+    const sel = $('#f-' + tier + '-vision');
+    const r = (settings.routes || {})[tier] || {};
+    const model = (r.model || '').trim();
+    if (!sel || !r.provider || !model) return;
+    const key = r.provider + '::' + model;
+    const v = sel.value;
+    const entry = Object.assign({}, (settings.modelInfo || {})[key], {
+      vision: v === 'yes' ? true : v === 'no' ? false : null,
+      // 'auto' is not a source: it clears the override and lets the server, or
+      // the next request, answer again.
+      source: v === 'auto' ? 'auto' : 'user'
+    });
+    settings.modelInfo = Object.assign({}, settings.modelInfo, { [key]: entry });
+    await app.settingsSet({ modelInfo: { [key]: entry } });
+    updateRouteHint(tier);
+  }
+
+  for (const tier of ['fast', 'smart']) {
+    $('#f-' + tier + '-vision').addEventListener('change', () => persistVisionOverride(tier));
+  }
+
+  /**
+   * Suggestions for one route, from that route's own provider.
+   *
+   * Unforced, so this rides the main process's discovery cache: opening the tab
+   * or switching a provider costs at most one request per endpoint per minute,
+   * and usually none.
+   */
+  async function discoverForRoute(tier, force = false) {
+    const id = $('#route-' + tier + '-provider').value;
+    const list = $('#model-list-' + tier);
+    if (!id || !list) return;
+    try {
+      const res = await app.discoverModels(id, { force });
+      discoveryFor[id] = res;
+      if (!res.ok) return;
+      // A vision route may only sensibly hold a model that can see; the other
+      // tiers take any chat model.
+      const chat = res.models.filter((m) => m.chat);
+      fillDatalist(list, tier === 'vision' ? chat.filter((m) => m.vision) : chat);
+      updateRouteHint(tier);
+      reportSize();
+    } catch { /* an unreachable server just means no suggestions */ }
   }
 
   async function persistRoute(tier) {
@@ -681,23 +788,16 @@
 
       // needsKey/local are properties of a custom entry, not of a built-in.
       $('#custom-opts').classList.toggle('hidden', !p.custom);
-      // A custom endpoint is *defined* by the two flags inside Advanced, so
-      // selecting one opens it. Built-ins already know their own answers.
-      if (advancedFor !== p.id) {
-        advancedFor = p.id;
-        setProviderAdvanced(!!p.custom);
-      }
       const cust = (settings.customProviders || []).find((c) => c.id === p.id);
       $('#f-needskey').checked = cust ? cust.needsKey !== false : !!p.needsKey;
       $('#f-local').checked = cust ? cust.local !== false : !!p.local;
-      $('#f-fast').value = m.fast || '';
-      $('#f-smart').value = m.smart || '';
-      $('#f-vision').checked = typeof m.vision === 'boolean' ? m.vision : !!p.vision;
       $('#f-label').value = m.label || '';
       $('#f-label').placeholder = p.label;
-      $('#model-meta').textContent = m.contextWindow ? fmtCtx(m.contextWindow) : '';
+      // Names the thing being edited. With the model fields gone this pane is
+      // purely "how to reach X", and it has to say which X.
+      $('#provider-detail-label').textContent = 'Connection — ' + p.label;
       $('#discover-status').textContent = '';
-      $('#model-list').innerHTML = '';
+      $('#test-status').textContent = '';
     }
 
     const stt = settings.stt || {};
@@ -722,6 +822,7 @@
     $('#row-wake').classList.toggle('hidden', !a.wakeWordEnabled);
 
     const ui = settings.ui || {};
+    applyAdvanced(!!ui.advanced);
     $('#f-glass').value = ui.glass || 'shaped';
     syncGlassNote();
     $('#f-zoom').value = Math.round((ui.textZoom || 1) * 100);
@@ -806,10 +907,17 @@
     settings.models = settings.models || {};
     settings.apiKeys[p.id] = $('#f-key').value.trim();
     const renamed = $('#f-label').value.trim();
+    /**
+     * Connection settings only.
+     *
+     * `fast`/`smart` and `vision` used to be written here too. The models were
+     * a duplicate of the routing rows above, and the vision flag was per
+     * PROVIDER -- so choosing a text-only model in a field nothing called
+     * stamped "cannot see images" onto every model the endpoint serves,
+     * including the one that could. Capability now lives per model in
+     * settings.modelInfo, written by whoever actually knows.
+     */
     settings.models[p.id] = Object.assign({}, settings.models[p.id], {
-      fast: $('#f-fast').value.trim(),
-      smart: $('#f-smart').value.trim(),
-      vision: $('#f-vision').checked,
       baseURL: $('#f-baseurl').value.trim() || undefined,
       label: renamed || undefined
     });
@@ -826,8 +934,7 @@
               label: renamed || c.label,
               baseURL: url || c.baseURL,
               needsKey: $('#f-needskey').checked,
-              local: $('#f-local').checked,
-              vision: $('#f-vision').checked }
+              local: $('#f-local').checked }
           : c
       ));
       await app.settingsSet({ customProviders: settings.customProviders });
@@ -840,25 +947,28 @@
 
   // Persist on blur rather than per keystroke; the store debounces anyway but
   // this keeps the settings file from churning while an API key is typed.
-  ['#f-key', '#f-fast', '#f-smart', '#f-baseurl', '#f-label'].forEach((sel) => {
+  ['#f-key', '#f-baseurl', '#f-label'].forEach((sel) => {
     $(sel).addEventListener('blur', persistProvider);
   });
-  $('#f-vision').addEventListener('change', persistProvider);
 
   /**
-   * The Advanced block is collapsed by default. Toggling it resizes the panel,
-   * so the window has to be told; nothing else observes this subtree.
+   * One advanced gate for the entire settings screen.
+   *
+   * This replaced a per-section disclosure. Four independent chevrons meant the
+   * same question -- "show me the expert controls" -- had to be answered four
+   * times, and a knob a user knew existed could be behind any of them.
    */
-  function setProviderAdvanced(open) {
-    // aria-expanded is the single source of truth: the chevron rotation is
-    // driven off it in CSS, so there is no second flag to keep in sync.
-    $('#provider-advanced').classList.toggle('hidden', !open);
-    $('#provider-more').setAttribute('aria-expanded', String(!!open));
+  function applyAdvanced(on) {
+    $('.s-scroll').classList.toggle('adv', !!on);
+    $('#f-advanced').checked = !!on;
     reportSize();
   }
 
-  $('#provider-more').addEventListener('click', () => {
-    setProviderAdvanced($('#provider-advanced').classList.contains('hidden'));
+  $('#f-advanced').addEventListener('change', async () => {
+    const on = $('#f-advanced').checked;
+    applyAdvanced(on);
+    settings.ui = Object.assign({}, settings.ui, { advanced: on });
+    await app.settingsSet({ ui: { advanced: on } });
   });
 
   $('#f-needskey').addEventListener('change', async () => {
@@ -894,55 +1004,35 @@
     const res = await app.discoverModels(editingProvider, { force: true });
     if (!res.ok) { status.textContent = res.error; reportSize(); return; }
 
-    lastDiscovery = res;
+    discoveryFor[editingProvider] = res;
     // Only chat models belong in the chat pickers; a transcription or TTS
     // checkpoint selected as the chat model fails in a confusing way.
     const chat = res.models.filter((m) => m.chat);
-    fillDatalist($('#model-list'), chat);
     fillDatalist($('#stt-model-list'), res.models.filter((m) => m.stt));
+
+    /**
+     * Refresh is the one action that must reach the routing rows.
+     *
+     * The main process has just folded every declared capability into the
+     * per-model cache, so re-reading the local copy and repainting the routes
+     * on this provider is what turns "why can it not see my screen" into a
+     * visible answer, without the user hunting for a checkbox.
+     */
+    settings = await app.settingsGet();
+    for (const tier of ['fast', 'smart', 'vision']) {
+      if ($('#route-' + tier + '-provider').value !== editingProvider) continue;
+      const list = $('#model-list-' + tier);
+      fillDatalist(list, tier === 'vision' ? chat.filter((m) => m.vision) : chat);
+      syncVisionOverride(tier);
+      updateRouteHint(tier);
+    }
 
     status.textContent = chat.length
       ? chat.length + ' chat model' + (chat.length === 1 ? '' : 's')
         + (res.classified ? ' · capabilities read from server' : ' · capabilities guessed from names')
       : 'Server reachable but no chat models are loaded.';
-    syncModelMeta();
     reportSize();
   });
-
-  /**
-   * Reflect the selected model's advertised capabilities.
-   *
-   * When the server states them (Lemonade's `labels`) the vision checkbox is set
-   * from the label rather than left to the user to guess. Guessing wrong is not
-   * a cosmetic error: a text-only model given an image fails the whole request,
-   * and on some servers it fails inside a 200 response.
-   */
-  function syncModelMeta() {
-    const tier = settings.smart ? 'smart' : 'fast';
-    const chosen = (tier === 'smart' ? $('#f-smart').value : $('#f-fast').value).trim();
-    const m = (lastDiscovery.models || []).find((x) => x.id === chosen);
-    const meta = $('#model-meta');
-    if (!m) { meta.textContent = ''; return; }
-
-    const bits = [];
-    if (m.contextWindow) bits.push(fmtCtx(m.contextWindow));
-    else bits.push('context length not reported');
-    bits.push(m.vision ? 'accepts images' : 'text only');
-    if (m.reasoning) bits.push('reasoning');
-    if (m.tools) bits.push('tool-calling');
-    meta.textContent = bits.join(' · ') + (m.capabilitiesKnown ? '' : ' (guessed)');
-
-    if (m.capabilitiesKnown) {
-      $('#f-vision').checked = !!m.vision;
-      settings.models[editingProvider] = Object.assign({}, settings.models[editingProvider], {
-        vision: !!m.vision,
-        contextWindow: m.contextWindow || null
-      });
-      app.settingsSet({ models: settings.models });
-    }
-  }
-
-  ['#f-fast', '#f-smart'].forEach((sel) => $(sel).addEventListener('change', syncModelMeta));
 
   /**
    * One button that answers "will this provider actually work?".

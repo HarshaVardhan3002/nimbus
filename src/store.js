@@ -45,7 +45,7 @@ function adoptLegacy() {
   }
 }
 
-const SCHEMA = 6;
+const SCHEMA = 7;
 
 const DEFAULTS = {
   schema: SCHEMA,
@@ -75,16 +75,32 @@ const DEFAULTS = {
     openai: '', anthropic: '', gemini: '', nvidia: '', ollama: '', lmstudio: ''
   },
 
-  // Per-provider model + capability overrides. baseURL here overrides the
-  // registry default, which is how you point "ollama" at another machine.
+  /**
+   * Per-provider connection settings: baseURL (overrides the registry default,
+   * which is how you point "ollama" at another machine) and a display label.
+   *
+   * `fast`/`smart` here are the legacy pre-routes selection and are read only by
+   * the v4 fallback path. Capabilities are NOT stored here -- see modelInfo.
+   */
   models: {
-    openai:    { fast: 'gpt-4o-mini', smart: 'gpt-4o', vision: true },
-    anthropic: { fast: 'claude-haiku-4-5-20251001', smart: 'claude-sonnet-5', vision: true },
-    gemini:    { fast: 'gemini-2.5-flash', smart: 'gemini-2.5-pro', vision: true },
-    nvidia:    { fast: 'meta/llama-3.2-11b-vision-instruct', smart: 'meta/llama-3.2-90b-vision-instruct', vision: true },
-    ollama:    { fast: 'llama3.2', smart: 'qwen2.5:14b', vision: false, baseURL: 'http://127.0.0.1:11434/v1' },
-    lmstudio:  { fast: '', smart: '', vision: false, baseURL: 'http://127.0.0.1:1234/v1' }
+    openai:    { fast: 'gpt-4o-mini', smart: 'gpt-4o' },
+    anthropic: { fast: 'claude-haiku-4-5-20251001', smart: 'claude-sonnet-5' },
+    gemini:    { fast: 'gemini-2.5-flash', smart: 'gemini-2.5-pro' },
+    nvidia:    { fast: 'meta/llama-3.2-11b-vision-instruct', smart: 'meta/llama-3.2-90b-vision-instruct' },
+    ollama:    { fast: 'llama3.2', smart: 'qwen2.5:14b', baseURL: 'http://127.0.0.1:11434/v1' },
+    lmstudio:  { fast: '', smart: '', baseURL: 'http://127.0.0.1:1234/v1' }
   },
+
+  /**
+   * Learned per-model capabilities, keyed "<providerId>::<modelId>".
+   *
+   *   { vision: boolean, contextWindow: number, source: 'user'|'server'|'probe' }
+   *
+   * One endpoint serves models with different capabilities, so this cannot live
+   * on the provider. Populated from /v1/models, from what a request proved, or
+   * by hand. See providers.visionFor().
+   */
+  modelInfo: {},
 
   // [{ id, label, baseURL, needsKey, local, vision }]
   customProviders: [],
@@ -186,6 +202,15 @@ const DEFAULTS = {
     theme: 'obsidian',
     reduceMotion: false,
     /**
+     * Reveals the developer/experimental controls throughout Settings.
+     *
+     * Off by default. Every setting behind this gate is one a user can reach
+     * their goal without: a vision-route override, per-model capability
+     * overrides, VAD thresholds, context depth, token ceilings. Showing them all
+     * at once made the meaningful three or four impossible to find.
+     */
+    advanced: false,
+    /**
      * WDA_EXCLUDEFROMCAPTURE. Named `privacy`, not `stealth`.
      *
      * The point is not hiding from a person; it is keeping a teleprompter
@@ -249,6 +274,25 @@ function load() {
    * just because it was written to disk once.
    */
   const from = Number(disk.schema) || 1;
+  if (from < 7) {
+    /**
+     * v7: vision stops being a per-provider flag.
+     *
+     * `models.<provider>.vision` was written by the settings UI from whichever
+     * model was selected in the provider's own fast/smart field -- a different
+     * model from the one the active route actually calls. The stored value is
+     * therefore not a user choice about anything identifiable, and keeping it
+     * would keep blinding capable models. Drop it, along with the contextWindow
+     * written by the same code path, and let capabilities be re-learned per
+     * model. The provider's own declared flag (customProviders[].vision) is a
+     * user choice and is preserved.
+     */
+    for (const m of Object.values(disk.models || {})) {
+      if (!m || typeof m !== 'object') continue;
+      delete m.vision;
+      delete m.contextWindow;
+    }
+  }
   if (from < 6) {
     /**
      * v6: the microphone stops being an ambient input.

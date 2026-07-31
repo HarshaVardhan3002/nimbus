@@ -53,7 +53,15 @@ function looksLikeVisionRejection(err) {
   // The model answered; it just answered with nothing. Retrying without the
   // image would burn a second round trip on the same outcome.
   if (err && err.emptyAnswer) return false;
-  if (/image|vision|multimodal|image_url|content parts|not support/.test(msg)) return true;
+  /**
+   * Match the image vocabulary, not a bare "not support".
+   *
+   * "not support" alone matched "tool calls are not supported" and "model not
+   * supported", so an unrelated failure was recorded as proof that the model is
+   * blind -- and that verdict is cached. The negation has to sit next to
+   * something about images to count.
+   */
+  if (/image|vision|multimodal|image_url|content parts|modalit/.test(msg)) return true;
   // A backend that only says "request failed" with a 400 is ambiguous, but an
   // image is by far the most common reason a request that works without one
   // starts failing, so it is worth one text-only retry to find out.
@@ -289,9 +297,9 @@ function explain(err, p) {
   if (status === 404) {
     return who + ': model not found (HTTP 404). Click "Refresh model list" in Settings to see what is actually loaded.';
   }
-  if (looksLikeVisionRejection(err) && p.vision) {
-    return who + ' rejected the request with an image attached. It is probably text-only — '
-      + 'untick "Model can see images" for this model, or pick one tagged vision.';
+  if (looksLikeVisionRejection(err) && p.vision !== false) {
+    return who + ' rejected the request with an image attached, so it is text-only. '
+      + 'Set a Vision route in Settings to hand screen questions to a model that can see.';
   }
   const code = status ? ' (HTTP ' + status + ')' : '';
   const kind = err && err.providerType ? ' [' + err.providerType + ']' : '';
@@ -345,9 +353,17 @@ function createLLM(settings, tierOrId) {
       const transport = TRANSPORTS[p.kind];
       if (!transport) throw new Error('No transport for provider kind "' + p.kind + '".');
 
-      // Never ship an image to a model flagged as text-only: it either 400s or,
-      // worse, silently drops it and answers about nothing.
-      const image = p.vision ? imageDataUrl : null;
+      /**
+       * Attach unless the model is KNOWN to be blind.
+       *
+       * p.vision is tri-state (see providers.visionFor): false means proven
+       * text-only and must never receive an image; null means nobody has said
+       * either way. Treating null as "no" is what made vision feel broken --
+       * a perfectly capable model stayed blind until the user hunted down a
+       * checkbox. Guessing yes costs one retry, once, and the answer is then
+       * remembered; guessing no costs a wrong answer every single time, silently.
+       */
+      const image = p.vision === false ? null : imageDataUrl;
 
       const run = (img) => transport({
         apiKey: p.apiKey,
@@ -400,10 +416,14 @@ function createLLM(settings, tierOrId) {
             if (typeof onNotice === 'function') {
               onNotice({
                 level: 'warn',
-                message: '"' + p.model + '" rejected the screenshot, so it answered from text only. '
-                  + 'Untick "Model can see images" for this model in Settings to stop attaching one.',
+                message: '"' + p.model + '" cannot accept images, so it answered from text alone. '
+                  + 'Nimbus will remember and stop attaching one. Set a Vision route in Settings to '
+                  + 'send screen questions somewhere that can see.',
+                // Recorded against THIS model, not the provider: the same
+                // endpoint may serve a vision model that is fine.
                 visionFailed: true,
-                provider: p.id
+                provider: p.id,
+                model: p.model
               });
             }
             return out;
