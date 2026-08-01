@@ -117,6 +117,44 @@ html[data-theme='porcelain'] {
   --shadow: 0 12px 36px rgba(0,0,0,0.16), 0 2px 8px rgba(0,0,0,0.10);
 }
 
+/* ------------------------------------------------------------------ aliases */
+/**
+ * A second set of names for the same palette.
+ *
+ * panel.css and pill.css were written against a semantic naming scheme
+ * (fill/stroke/tx-mut) that this file never defined, so roughly sixty
+ * declarations across the two were invalid at computed-value time and silently
+ * fell back: `background: var(--fill-1)` painted nothing, `color: var(--tx-mut)`
+ * inherited, and `transition: … var(--ease-std)` dropped the easing. Most of it
+ * read as "slightly flatter than intended" rather than as breakage, which is why
+ * it survived.
+ *
+ * Aliasing is the small fix. Renaming sixty references would touch every rule in
+ * both files for no visual gain, and custom properties resolve lazily, so an
+ * alias declared here still picks up whichever theme is active.
+ */
+:root {
+  --fill-1: var(--bg-raise);
+  --fill-2: var(--bg-raise-2);
+  --fill-3: var(--bg-sink);
+  --surface-2: var(--bg-solid);
+
+  --stroke-hair: var(--line);
+  --stroke-rim:  var(--line-firm);
+
+  --tx-mut: var(--tx-2);
+  --tx-dim: var(--tx-3);
+
+  --accent-soft: color-mix(in srgb, var(--accent) 18%, transparent);
+  --accent-deep: color-mix(in srgb, var(--accent) 78%, black);
+
+  --font-display: var(--font);
+
+  --ease-std:   var(--ease);
+  --ease-decel: cubic-bezier(0.16, 1, 0.3, 1);
+  --t-med: var(--t-normal);
+}
+
 * { box-sizing: border-box; }
 
 html, body {
