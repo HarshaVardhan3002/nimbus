@@ -92,7 +92,7 @@ function lastSummary(messages) {
  */
 function grade(messages, opts) {
   const o = opts || {};
-  const keepHot = Math.max(2, o.keepHot || DEFAULTS.keepHot);
+  let keepHot = Math.max(2, o.keepHot || DEFAULTS.keepHot);
   const minFold = Math.max(1, o.minFold || DEFAULTS.minFold);
   const maxWarm = Math.max(1, o.maxWarm || DEFAULTS.maxWarm);
 
@@ -111,12 +111,32 @@ function grade(messages, opts) {
     live.push({ index: i, role: messages[i].role, text: messages[i].content });
   }
 
+  /**
+   * A hot band measured in MESSAGES can be bigger than the whole window.
+   *
+   * One rambling answer that ran to the reply ceiling is a single message, and
+   * six of those are pinned verbatim by a keepHot of six -- so compaction folds
+   * the old turns, reports a 1% saving, and the context stays over budget for
+   * the rest of the conversation. Every later compaction then has less and less
+   * to work with while the thing actually filling the window is untouchable.
+   *
+   * So when the caller knows the budget, the band shrinks until what it holds
+   * fits. Never below two: the last user message and the answer it is about are
+   * what "explain that again" resolves against, and folding those is the one
+   * thing this must never do.
+   */
+  const budget = typeof o.budget === 'number' && o.budget > 0 ? o.budget : null;
+  if (budget) {
+    while (keepHot > 2 && estimateTurns(live.slice(-keepHot), o.cpt) > budget) keepHot--;
+  }
+
   const foldable = live.slice(0, Math.max(0, live.length - keepHot));
   if (foldable.length < minFold) {
     return {
       ok: false,
       reason: 'Only ' + live.length + ' exchange' + (live.length === 1 ? '' : 's')
-        + ' since the last compression — not enough to be worth one.'
+        + ' since the last compression, and the last ' + keepHot
+        + ' are always kept word for word — not enough left to be worth folding.'
     };
   }
 
@@ -130,6 +150,8 @@ function grade(messages, opts) {
     cold,
     warm,
     hot: live.slice(live.length - keepHot),
+    /** What the band ended up being, after any budget-driven shrink. */
+    keptHot: keepHot,
     /** Index of the last message this compaction accounts for. */
     covers: foldable[foldable.length - 1].index,
     folded: foldable.length,
@@ -142,6 +164,19 @@ function shouldCompact(snapshot, settings) {
   const c = (settings && settings.context) || {};
   if (c.autoCompact === false) return { yes: false, reason: 'off' };
   if (!snapshot) return { yes: false, reason: 'unknown' };
+
+  /**
+   * One model configured: warn on screen rather than acting.
+   *
+   * With a second, stronger tier the trade is obvious -- spend one better call
+   * to keep the conversation coherent. With only one model, compaction is that
+   * same model summarising a conversation it is already straining to hold, and
+   * the summary it produces is what everything afterwards is built on. That is
+   * the user's call to make, so this surfaces the choice and leaves the manual
+   * button live. `single` is set by the caller, which is the only layer that can
+   * see the route table.
+   */
+  if (snapshot.single) return { yes: false, reason: 'single' };
 
   /**
    * A pure guess never triggers a compression on its own.

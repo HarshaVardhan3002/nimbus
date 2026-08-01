@@ -261,6 +261,50 @@ function resolveTier(settings, tier) {
 }
 
 /**
+ * Which model would compress this conversation, and whether it is a step up.
+ *
+ * Compaction decides what every later answer is built on, so running it on a
+ * model that is already struggling with the length is a real trade-off rather
+ * than a free win. It is still better than the silent truncation it replaces, so
+ * this reports rather than refuses and the caller decides.
+ *
+ * `distinct` compares the two TIERS, not the compressor against whatever happens
+ * to be answering right now. With the Smart toggle on, the smart model is both
+ * the answerer and the compressor, and that is the best case rather than a
+ * degraded one -- comparing those two would flag it as "one model" and warn
+ * about the strongest configuration the user can have.
+ *
+ * Same provider AND same model is what counts as one model. A different provider
+ * serving the same model name is still one model in every way that matters here,
+ * and two models on one provider are two models.
+ */
+function compactorFor(settings) {
+  const fast = resolveTier(settings, 'fast');
+  const smart = resolveTier(settings, 'smart');
+
+  if (!smart || !smart.ready) {
+    return {
+      ok: false,
+      distinct: false,
+      provider: smart ? smart.id : null,
+      model: smart ? smart.model : null,
+      reason: (smart && smart.reason) || 'No smart model is configured.'
+    };
+  }
+
+  const same = !!fast && fast.id === smart.id && fast.model === smart.model;
+
+  return {
+    ok: true,
+    distinct: !same,
+    provider: smart.id,
+    label: smart.label,
+    model: smart.model,
+    reason: null
+  };
+}
+
+/**
  * Capability classification for a /v1/models entry.
  *
  * Servers disagree wildly about what they put here, so this reads whatever is
@@ -691,6 +735,6 @@ module.exports = {
   BUILTIN, BUILTIN_ORDER, NO_KEY, OPENAI_COMPATIBLE,
   list, get, labelOf, resolve, resolveTier, routeFor, TIERS, ROUTE_TIERS,
   capabilityKey, modelInfoFor, visionFor, contextWindowFor, contextBudgetFor,
-  charsPerTokenFor, learnModel, INFO_RANK, WINDOW_RANK,
+  charsPerTokenFor, learnModel, compactorFor, INFO_RANK, WINDOW_RANK,
   discoverModels, clearDiscoveryCache, classifyModel, readContextWindow, readModalities, httpHint
 };

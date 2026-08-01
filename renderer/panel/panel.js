@@ -47,6 +47,7 @@
   $('#send').innerHTML = icon('corner-down-left', { size: 15 });
   $('#s-close').innerHTML = icon('x', { size: 16 });
   $('#h-close').innerHTML = icon('x', { size: 16 });
+  $('#advice-x').innerHTML = icon('x', { size: 13 });
   $('#history-btn').innerHTML = icon('history', { size: 15 });
   $('#new-btn').innerHTML = icon('plus', { size: 16 });
   $('#add-provider .ic').innerHTML = icon('plus', { size: 13 });
@@ -365,6 +366,65 @@
   }
   function hideNotice() { notice.className = 'notice'; reportSize(); }
 
+  // ---- the standing "will not compress itself" card ------------------------
+  /**
+   * Shown once per conversation, by main. Two causes, two different things the
+   * user can do about it, so the body says which one this is instead of offering
+   * a generic "context is full".
+   */
+  function showAdvice(a) {
+    if (!a) return;
+    const card = $('#advice');
+    const single = a.kind === 'single';
+    adviceKind = a.kind;
+    $('.advice-ic').innerHTML = icon('sparkles', { size: 13 });
+    $('#advice-title').textContent = single
+      ? 'This conversation will not compress itself'
+      : 'This conversation may be near its limit';
+    $('#advice-body').textContent = single
+      ? 'It is about ' + Math.round((a.pct || 0) * 100) + '% full. Only one model is set up, so '
+        + 'compressing would mean "' + a.model + '" summarising a conversation it is already '
+        + 'stretching to hold. Nimbus will not do that on its own — but nothing is deleted if you '
+        + 'ask it to, and setting a stronger model for the smart tier makes it automatic.'
+      : 'It is about ' + Math.round((a.pct || 0) * 100) + '% full against an assumed '
+        + Math.round((a.window || 0) / 1000) + 'k window — "' + a.model + '" never said how much it '
+        + 'takes. Nimbus will not compress on a guess. Set the real window in Settings, or compress '
+        + 'now if replies have started losing the thread.';
+    card.classList.remove('hidden');
+    reportSize();
+  }
+  function hideAdvice() { $('#advice').classList.add('hidden'); reportSize(); }
+
+  /** Which advice is on screen, so its button knows where it is sending you. */
+  let adviceKind = null;
+
+  /**
+   * Both things the card suggests -- a stronger smart model, a real context
+   * window -- sit behind the advanced disclosure, and the card is the only
+   * place that names them. Opening settings on the default tab with the
+   * disclosure shut would land the user on a screen that does not contain the
+   * control they were just told to change, so this turns it on and scrolls
+   * the row into view.
+   */
+  async function openAdviceSettings() {
+    const kind = adviceKind;
+    hideAdvice();
+    if (!(settings.ui || {}).advanced) {
+      settings.ui = Object.assign({}, settings.ui, { advanced: true });
+      await app.settingsSet({ ui: { advanced: true } });
+    }
+    showSettings(true);
+    showTab('models');
+    applyAdvanced(true);
+    const target = kind === 'single'
+      ? $('#route-smart-model')
+      : $('#f-' + (settings.smart ? 'smart' : 'fast') + '-window');
+    if (target) {
+      target.scrollIntoView({ block: 'center' });
+      target.focus();
+    }
+  }
+
   function setBusy(v) {
     busy = v;
     sendBtn.classList.toggle('busy', v);
@@ -434,8 +494,7 @@
     e.stopPropagation();
     toggleContextPop();
   });
-  $('#ctx-compact').addEventListener('click', async (e) => {
-    e.stopPropagation();
+  async function compactNow() {
     if (compacting) { app.abort(); return; }
     // Optimistic, because main broadcasts compact:state only once it has decided
     // there is something to do -- and a button that stays idle after a click
@@ -446,13 +505,19 @@
       const res = await app.compactNow();
       // A cancel is the user getting what they asked for, not a failure.
       if (res && !res.ok && !res.cancelled) showNotice(res.reason || 'Could not compress.', 'warn');
+      if (res && res.ok) hideAdvice();
     } catch (err) {
       showNotice((err && err.message) || 'Could not compress.', 'warn');
     } finally {
       compacting = false;
       paintCompactBtn();
     }
-  });
+  }
+
+  $('#ctx-compact').addEventListener('click', (e) => { e.stopPropagation(); compactNow(); });
+  $('#advice-compact').addEventListener('click', () => compactNow());
+  $('#advice-x').addEventListener('click', () => hideAdvice());
+  $('#advice-settings').addEventListener('click', () => openAdviceSettings());
   // Click-away, like every other transient surface in the panel. Registered on
   // the document rather than a backdrop so it never steals a click from the
   // composer underneath it.
@@ -610,6 +675,8 @@
   /** Replay a stored session into the chat view. */
   function renderSession(s) {
     clearMessages();
+    // The advice is about the conversation that was on screen, not this one.
+    hideAdvice();
     currentId = (s && s.id) || null;
     $('#convo-title').textContent = (s && s.title) || 'New conversation';
     for (const m of ((s && s.messages) || [])) {
@@ -639,6 +706,7 @@
   $('#new-btn').addEventListener('click', async () => {
     await app.historyNew();
     clearMessages();
+    hideAdvice();
     currentId = null;
     $('#convo-title').textContent = 'New conversation';
     showView('chat');
@@ -1049,6 +1117,8 @@
     const ctx = typeof hcfg.contextTurns === 'number' ? hcfg.contextTurns : 12;
     $('#f-ctx').value = ctx;
     $('#ctx-val').textContent = ctx === 0 ? 'off' : ctx + ' turns';
+
+    syncCompactSettings();
 
     const reply = settings.reply || {};
     const mt = typeof reply.maxTokens === 'number' ? reply.maxTokens : 4096;
@@ -1529,6 +1599,52 @@
     await app.settingsSet({ reply: settings.reply });
   });
 
+  // ---- context compression -------------------------------------------------
+  /**
+   * The two sliders only mean anything while compression is on, so they collapse
+   * with the toggle rather than sitting there greyed out and inviting a click.
+   */
+  function syncCompactSettings() {
+    const c = settings.context || {};
+    const on = c.autoCompact !== false;
+    const trigger = Math.round((typeof c.triggerPct === 'number' ? c.triggerPct : 0.55) * 100);
+    const hot = typeof c.keepHot === 'number' ? c.keepHot : 6;
+
+    $('#f-autocompact').checked = on;
+    $('#f-trigger').value = trigger;
+    $('#trigger-val').textContent = trigger + '% full';
+    $('#f-keephot').value = hot;
+    $('#keephot-val').textContent = hot + ' messages';
+    $('#row-trigger').classList.toggle('hidden', !on);
+    $('#row-keephot').classList.toggle('hidden', !on);
+    $('#compact-hint').textContent = on
+      ? 'Compression starts once the context is ' + trigger + '% full, and the last '
+        + hot + ' messages are always sent word for word so follow-ups still resolve.'
+      : 'Long conversations will be truncated instead: the oldest turns stop being sent, '
+        + 'and the assistant forgets them without saying so. Compress by hand from the model chip.';
+
+    // The turn limit above only bites when compression is off, so the hint that
+    // describes it has to say which of the two is in force. A slider that reads
+    // "12 turns" while the whole conversation is being sent is a lie the user
+    // would only catch by counting tokens.
+    $('#ctx-turns-hint').textContent = on
+      ? 'Not applied while compression is on — the summary bounds the context instead, '
+        + 'so nothing is dropped without being folded in first. Turn compression off to '
+        + 'cap the conversation at this many turns.'
+      : 'Prior turns sent with each message. More context means better follow-ups and a '
+        + 'slower first token.';
+  }
+
+  async function saveContext(patch) {
+    settings.context = Object.assign({}, settings.context, patch);
+    await app.settingsSet({ context: settings.context });
+    syncCompactSettings();
+  }
+
+  $('#f-autocompact').addEventListener('change', () => saveContext({ autoCompact: $('#f-autocompact').checked }));
+  $('#f-trigger').addEventListener('input', () => saveContext({ triggerPct: Number($('#f-trigger').value) / 100 }));
+  $('#f-keephot').addEventListener('input', () => saveContext({ keepHot: Number($('#f-keephot').value) }));
+
   async function refreshStealthStatus() {
     try {
       const st = await app.stealthStatus();
@@ -1677,6 +1793,9 @@
     btn.title = compacting
       ? 'Stop. The conversation is left exactly as it is.'
       : 'Fold the earlier turns into a summary, on the smart model. Nothing is deleted.';
+    // The card carries its own copy of the same button and has to agree with it.
+    const card = $('#advice-compact');
+    if (card) card.textContent = compacting ? 'Stop compressing' : 'Compress now';
   }
 
   function toggleContextPop(force) {
@@ -1740,14 +1859,22 @@
   app.on('settings:changed', (s) => { settings = s; refreshModelChip(); });
   app.on('context:usage', (c) => paintContext(c));
   app.on('compact:state', (s) => { compacting = !!(s && s.active); paintCompactBtn(); });
+  app.on('compact:advice', (a) => showAdvice(a));
   app.on('compact:done', (r) => {
     // The marker goes in from the broadcast rather than from a reload: the
     // session on screen is the live one, and re-rendering it would scroll the
     // user away from whatever they were reading.
     addFold({ content: (r && r.text) || '', folded: r && r.turns, ts: r && r.ts });
     if (r && r.before && r.after) {
-      showNotice('Compressed ' + r.turns + ' earlier messages. Context is back to '
-        + Math.round((r.after / r.before) * 100) + '% of what it was.', 'info');
+      // A summary can come out no smaller than the handful of short turns it
+      // replaced. Reporting that as "back to 126%" reads like a win and is not
+      // one, so the two outcomes get different sentences.
+      const saved = Math.round((1 - r.after / r.before) * 100);
+      showNotice(saved > 0
+        ? 'Compressed ' + r.turns + ' earlier messages. Context is ' + saved + '% smaller.'
+        : 'Compressed ' + r.turns + ' earlier messages, but the summary is no shorter than '
+          + 'the turns it replaced. Nothing was lost — later exchanges will fold better.',
+      'info');
     }
   });
   app.on('panel:focus-input', () => { input.focus(); });

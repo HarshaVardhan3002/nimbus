@@ -240,6 +240,56 @@ body { width: 100%; }
 .notice.warn  { background: rgba(255,184,107,0.12); border: 1px solid rgba(255,184,107,0.30); color: #FFD9AE; }
 .notice.error { background: rgba(255,107,107,0.12); border: 1px solid rgba(255,107,107,0.32); color: #FFC2C2; }
 
+/* ============================== advice ============================== */
+/**
+ * The standing "this will not compress itself" card.
+ *
+ * Styled below a notice rather than above it: the conversation still works, and
+ * shouting at the user about a decision they have not been asked to make yet is
+ * how a warning becomes something people click past without reading.
+ */
+.advice {
+  margin-top: 10px;
+  padding: 9px 11px 10px;
+  border-radius: var(--r-card);
+  border: 1px solid var(--stroke-rim);
+  background: var(--fill-1);
+  font-size: 12.5px;
+  line-height: 1.45;
+  animation: riseIn 200ms var(--ease-decel) both;
+}
+.advice.hidden { display: none; }
+.advice-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--tx-1);
+  font-weight: 600;
+}
+.advice-ic { display: inline-flex; color: var(--warn); }
+.advice-close { margin-left: auto; width: 22px; height: 22px; }
+.advice-body {
+  margin-top: 4px;
+  color: var(--tx-dim);
+  -webkit-user-select: text;
+  user-select: text;
+}
+.advice-acts { display: flex; gap: 6px; margin-top: 9px; }
+.advice-btn {
+  padding: 5px 10px;
+  border-radius: var(--r-ctl);
+  border: 1px solid var(--stroke-hair);
+  background: var(--fill-2);
+  color: var(--tx-1);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background var(--t-fast) var(--ease-std);
+}
+.advice-btn:hover:not(:disabled) { background: var(--fill-3); }
+.advice-btn:disabled { opacity: 0.45; cursor: default; }
+.advice-btn.primary { border-color: var(--accent-soft); }
+
 /* ============================== actions ============================== */
 #actions {
   display: flex;

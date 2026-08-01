@@ -33,6 +33,22 @@
 
       <div id="notice" class="notice"></div>
 
+      <!-- Says the conversation is filling up and will NOT compress itself, and
+           why. Not a notice: notices time out, and this is a standing condition
+           with a decision attached, so it stays until the user acts on it. -->
+      <div id="advice" class="advice hidden" role="status">
+        <div class="advice-head">
+          <span class="advice-ic"></span>
+          <span id="advice-title"></span>
+          <button id="advice-x" class="icon-btn advice-close" title="Dismiss"></button>
+        </div>
+        <div id="advice-body" class="advice-body"></div>
+        <div class="advice-acts">
+          <button id="advice-compact" class="advice-btn primary">Compress now</button>
+          <button id="advice-settings" class="advice-btn">Open Settings</button>
+        </div>
+      </div>
+
       <div id="actions">
         <button class="act" data-mode="assist"><span class="ic"></span><span>Assist</span></button>
         <button class="act" data-mode="say"><span class="ic"></span><span>What do I say?</span></button>
@@ -374,7 +390,25 @@
             <input id="f-ctx" type="range" min="0" max="30" step="2" />
             <span id="ctx-val" class="s-hint"></span>
           </div>
-          <div class="s-hint" data-adv>Prior turns sent with each message. More context means better follow-ups and a slower first token.</div>
+          <div class="s-hint" data-adv id="ctx-turns-hint"></div>
+
+          <div class="s-label" data-adv>Context compression</div>
+          <label class="s-check" data-adv>
+            <input id="f-autocompact" type="checkbox" />
+            <span>Compress long conversations automatically
+              <em>Folds the older exchanges into one summary on the smart model, so a long conversation keeps working instead of quietly forgetting its start. Nothing is deleted — History and search always show the real conversation. Needs a second, stronger model; with only one configured, Nimbus asks first.</em></span>
+          </label>
+          <div class="s-row" data-adv id="row-trigger">
+            <span>Trigger</span>
+            <input id="f-trigger" type="range" min="30" max="90" step="5" />
+            <span id="trigger-val" class="s-hint"></span>
+          </div>
+          <div class="s-row" data-adv id="row-keephot">
+            <span>Keep verbatim</span>
+            <input id="f-keephot" type="range" min="2" max="20" step="2" />
+            <span id="keephot-val" class="s-hint"></span>
+          </div>
+          <div class="s-hint" data-adv id="compact-hint"></div>
 
           <div class="s-label" data-adv>Reply length</div>
           <div class="s-row" data-adv>

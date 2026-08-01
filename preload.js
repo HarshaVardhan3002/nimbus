@@ -21,6 +21,7 @@ const INBOUND = [
   'context:usage',
   'compact:state',
   'compact:done',
+  'compact:advice',
   'settings:changed',
   'listen:request',
   'mic:gate',

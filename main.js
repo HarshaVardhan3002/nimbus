@@ -55,10 +55,10 @@ const state = {
   // `busy`: it happens inside a feature run, and sharing that latch would make
   // the compaction refuse to start because the turn it is preparing for is busy.
   compacting: false,
-  // Said once per conversation, not once per message: a window nobody declared
-  // is a standing condition, and repeating it every turn would train the user to
-  // dismiss the notice that matters.
-  warnedGuessFull: false
+  // Said once per conversation, not once per message: "this will not compress
+  // itself" is a standing condition, and repeating it every turn would train the
+  // user to dismiss the notice that eventually matters.
+  advisedFull: false
 };
 
 /**
@@ -279,6 +279,34 @@ function recordContextLimit(provider, model, limit) {
 }
 
 /**
+ * A ceiling that exists only so a broken compaction cannot grow the request
+ * without limit. Nothing should ever reach it: the trigger fires at a fraction
+ * of the window, long before this many turns fit inside one.
+ */
+const HARD_CONTEXT_TURNS = 400;
+
+/**
+ * How many turns may be sent.
+ *
+ * With compression off this is the user's setting, and the oldest turns are
+ * dropped once it is exceeded -- which is what the setting says it does.
+ *
+ * With compression ON the setting is deliberately ignored. A fixed turn cap
+ * would keep silently discarding the start of the conversation, which is the
+ * exact behaviour compression exists to replace, and worse: while the cap is
+ * doing the discarding the measured fill never climbs, so the trigger would
+ * never be reached and compression would never run at all. Zero still means
+ * zero -- someone who asked for no history meant it.
+ */
+function contextTurnLimit(settings) {
+  const cap = (settings.history || {}).contextTurns;
+  const n = typeof cap === 'number' ? cap : null;
+  if (n === 0) return 0;
+  if ((settings.context || {}).autoCompact === false) return n;
+  return HARD_CONTEXT_TURNS;
+}
+
+/**
  * The context actually sent with the next message.
  *
  * history.contextTurns() hands back a compaction as a single entry with role
@@ -289,7 +317,7 @@ function recordContextLimit(provider, model, limit) {
  */
 function assembleContext(settings) {
   if (!convo) return [];
-  const raw = history.contextTurns(convo, (settings.history || {}).contextTurns);
+  const raw = history.contextTurns(convo, contextTurnLimit(settings));
   const out = [];
   for (const t of raw) {
     if (t.role === 'summary') { for (const p of compactPrefill(t.text)) out.push(p); }
@@ -318,11 +346,17 @@ function contextSnapshot() {
   const used = estimateTurns(prior, cpt);
   const usable = Math.max(1024, budget.tokens - reply);
   const folded = convo ? compact.lastSummary(convo.messages || []) : null;
+  const compactor = providers.compactorFor(settings);
 
   return {
     used,
     usable,
     reply,
+    // Whether compression would run on the same model that is answering. The
+    // fill bar needs it to explain why nothing is happening on its own.
+    single: !compactor.ok || !compactor.distinct,
+    compactor: compactor.ok ? (compactor.label || compactor.provider) + ' · ' + compactor.model : null,
+    compactorReason: compactor.reason,
     window: budget.tokens,
     pct: Math.min(1, used / usable),
     guessed: budget.guessed,
@@ -347,6 +381,13 @@ function pushContext() {
 const COMPACT_TIMEOUT_MS = 90000;
 
 /**
+ * How full a conversation gets before Nimbus says so, when it will not act on
+ * its own. Above the automatic trigger, because a reminder that fires at the
+ * same time automatic compaction would have run is a reminder about nothing.
+ */
+const ADVISE_PCT = 0.8;
+
+/**
  * Fold the older part of this conversation into one structured summary.
  *
  * Always the SMART tier, whatever the current turn is routed to. This is the
@@ -366,15 +407,29 @@ async function runCompaction({ auto } = {}) {
 
   const settings = store.getSettings();
   const cfg = settings.context || {};
-  const plan = compact.grade(convo.messages, { keepHot: cfg.keepHot });
+  // Taken before anything is appended, and handed to grade() so the verbatim
+  // band can be trimmed to something that actually fits the window.
+  const before = contextSnapshot();
+  const plan = compact.grade(convo.messages, {
+    keepHot: cfg.keepHot,
+    budget: before ? before.usable : null
+  });
   if (!plan.ok) return { ok: false, reason: plan.reason };
 
-  const llm = createLLM(settings, 'smart');
+  /**
+   * The smart tier when there is one, otherwise whatever is answering.
+   *
+   * Falling back rather than refusing: a summary written by the small model is
+   * worse than one written by a good model, and better than the silent
+   * truncation that is the only other option. Refusing here would leave a user
+   * with one model in exactly the state this feature exists to fix.
+   */
+  let llm = createLLM(settings, 'smart');
+  if (!llm.ready) llm = createLLM(settings, settings.smart ? 'smart' : 'fast');
   if (!llm.ready) {
-    return { ok: false, reason: llm.reason || 'No smart model is configured to compress with.' };
+    return { ok: false, reason: llm.reason || 'No model is configured to compress with.' };
   }
 
-  const before = contextSnapshot();
   state.compacting = true;
   broadcast('compact:state', { active: true, auto: !!auto, turns: plan.folded });
 
@@ -480,25 +535,41 @@ async function maybeCompact() {
   const settings = store.getSettings();
   const snap = contextSnapshot();
   const verdict = compact.shouldCompact(snap, settings);
-  if (!verdict.yes) {
-    /**
-     * Over the line on a window nobody has declared. Compressing on a guess
-     * would destroy detail to solve a problem that may not exist, so this offers
-     * instead of acting -- once, not on every message.
-     */
-    if (verdict.reason === 'guessed' && snap && snap.pct >= 0.8 && !state.warnedGuessFull) {
-      state.warnedGuessFull = true;
-      notify('This conversation is long, and "' + snap.model + '" has not declared a context window, '
-        + 'so Nimbus is assuming ' + Math.round(snap.window / 1000) + 'k. '
-        + 'Compress it from the model chip, or set the real window in Settings.', 'warn');
-    }
-    return;
-  }
+  if (!verdict.yes) { adviseFull(snap, verdict); return; }
   notify('Compressing the conversation so it keeps fitting…', 'info');
   const res = await runCompaction({ auto: true });
   // A cancel is not a failure. The user pressed Stop and got what they asked
   // for; telling them it "could not" compress would read as a fault.
   if (!res.ok && !res.cancelled && res.reason) notify('Could not compress: ' + res.reason, 'warn');
+}
+
+/**
+ * The on-screen reminder for a conversation that is filling up and will NOT be
+ * compressed automatically.
+ *
+ * Two ways to end up here. Either only one model is configured, so compaction
+ * would be that model summarising a conversation it is already straining to
+ * hold; or the window is a pure guess, so acting on it could destroy detail to
+ * solve a problem that does not exist. Both are decisions the user should make,
+ * and neither is an error, so this is a card with buttons rather than a warning.
+ *
+ * Said once per conversation. Repeating it every turn would train the user to
+ * dismiss the notice that eventually matters.
+ */
+function adviseFull(snap, verdict) {
+  if (!snap || state.advisedFull) return;
+  if (snap.pct < ADVISE_PCT) return;
+  if (verdict.reason !== 'single' && verdict.reason !== 'guessed') return;
+
+  state.advisedFull = true;
+  broadcast('compact:advice', {
+    kind: verdict.reason,
+    pct: snap.pct,
+    model: snap.model,
+    window: snap.window,
+    compactor: snap.compactor,
+    compactorReason: snap.compactorReason
+  });
 }
 
 // ---------------------------------------------------------------- mic gate
@@ -759,12 +830,17 @@ async function runFeature(mode, userText) {
     let sawFirstToken = false;
     let usage = null;
     // What we know we put on the wire, for calibrating this model's tokenizer.
-    const promptChars = String(def.system || '').length
-      + turns.reduce((n, t) => n + String(t.text || '').length, 0);
+    const charsOf = (ts) => String(def.system || '').length
+      + ts.reduce((n, t) => n + String(t.text || '').length, 0);
+    let promptChars = charsOf(turns);
 
-    const full = await activeLLM.stream({
+    /**
+     * One attempt. Wrapped so the overflow recovery below can make a second one
+     * against a compacted context without restating every handler.
+     */
+    const streamOnce = (sendTurns) => activeLLM.stream({
       system: def.system,
-      turns,
+      turns: sendTurns,
       imageDataUrl,
       signal: abortController.signal,
       maxTokens: Math.max(256, ((settings.reply || {}).maxTokens) || 4096),
@@ -811,6 +887,40 @@ async function runFeature(mode, userText) {
         }
       }
     });
+
+    let full;
+    try {
+      full = await streamOnce(turns);
+    } catch (e) {
+      /**
+       * The cap, hit for real.
+       *
+       * The provider just refused the request for length, which is both the best
+       * evidence there is about this model's window and the exact situation
+       * compaction exists for. So: learn the number, fold, and try once. One
+       * retry only -- if a compacted context is still too long, the next thing to
+       * change is the model or the reply budget, not the conversation.
+       */
+      if (!e || !e.contextOverflow || !conversational) throw e;
+      recordContextLimit(e.provider, e.model, e.contextLimit);
+      notify('That was longer than "' + activeLLM.model + '" can take. Compressing and retrying…', 'warn');
+
+      const res = await runCompaction({ auto: true });
+      // Rethrow the ORIGINAL error: "too long" is what the user needs to act on,
+      // and a compaction failure on top of it is noise about the recovery.
+      if (!res.ok) throw e;
+
+      const refreshed = assembleContext(settings);
+      // The question was appended before the request went out, so it is now both
+      // the tail of the assembled context and the turn about to be sent. Drop the
+      // copy rather than asking it twice.
+      if (refreshed.length && refreshed[refreshed.length - 1].role === 'user') refreshed.pop();
+      const retryTurns = refreshed.concat([{ role: 'user', text: built }]);
+      promptChars = charsOf(retryTurns);
+      sawFirstToken = false;
+      usage = null;
+      full = await streamOnce(retryTurns);
+    }
 
     if (typeof full === 'string' && full.trim()) {
       history.append(convo, 'assistant', full, {
@@ -1017,12 +1127,12 @@ function registerIPC() {
   ipcMain.handle('history:rename', (_e, id, title) => history.rename(id, title));
   ipcMain.handle('history:load', (_e, id) => {
     const s = history.load(id);
-    if (s) { convo = s; state.warnedGuessFull = false; broadcast('history:opened', s); pushContext(); }
+    if (s) { convo = s; state.advisedFull = false; broadcast('history:opened', s); pushContext(); }
     return s;
   });
   ipcMain.handle('history:new', () => {
     convo = null;     // created lazily on the next message, so empty sessions never persist
-    state.warnedGuessFull = false;
+    state.advisedFull = false;
     broadcast('history:opened', { id: null, title: 'New conversation', messages: [] });
     pushContext();
     return true;
