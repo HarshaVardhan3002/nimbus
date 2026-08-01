@@ -17,6 +17,7 @@
  */
 
 const crypto = require('crypto');
+const tokens = require('./tokens');
 
 const OPENAI_COMPATIBLE = 'openai';
 
@@ -437,6 +438,38 @@ function contextWindowFor(settings, providerId, modelId) {
 }
 
 /**
+ * How big this model's context window is, and how much that answer is worth.
+ *
+ * Always returns a number, because the alternative -- refusing to say anything
+ * about a model nobody declared a window for -- means no fill bar and no warning
+ * for exactly the self-hosted endpoints most likely to have a small one.
+ *
+ * `source` is what the caller shows the user. A 'guess' is rendered as an
+ * estimate and never triggers automatic compression on its own: it can warn and
+ * it can offer, but acting on a number nobody vouched for would compress
+ * conversations that had plenty of room left.
+ */
+function contextBudgetFor(settings, providerId, modelId) {
+  const info = modelInfoFor(settings, providerId, modelId);
+  if (info && typeof info.contextWindow === 'number') {
+    return {
+      tokens: info.contextWindow,
+      source: info.windowSource || info.source || 'server',
+      guessed: false
+    };
+  }
+  const named = tokens.windowFromName(modelId);
+  if (named) return { tokens: named, source: 'name', guessed: true };
+  return { tokens: tokens.DEFAULT_WINDOW, source: 'guess', guessed: true };
+}
+
+/** Measured characters-per-token for this model, or null if never calibrated. */
+function charsPerTokenFor(settings, providerId, modelId) {
+  const info = modelInfoFor(settings, providerId, modelId);
+  return info && typeof info.charsPerToken === 'number' ? info.charsPerToken : null;
+}
+
+/**
  * Fold what we just learned about a model into a settings patch.
  *
  * `source` records how we know, so weaker evidence cannot quietly undo stronger:
@@ -452,20 +485,88 @@ function contextWindowFor(settings, providerId, modelId) {
  */
 const INFO_RANK = { guess: 0, server: 1, probe: 2, user: 3 };
 
-function learnModel(settings, providerId, modelId, facts, source = 'server', { override = false } = {}) {
+/**
+ * Evidence ranking for the context window, kept SEPARATE from the vision rank.
+ *
+ * The two facts are learned from different events and would otherwise interfere:
+ * a window observed from an ordinary successful request would raise the record's
+ * rank and then block a later, better answer about vision -- or vice versa. One
+ * shared `source` field cannot describe two independently-sourced facts.
+ *
+ *   observed — a request of this size was accepted, so the window is at least
+ *              this big. A floor, never an exact figure.
+ *   server   — /v1/models declared it. Often a build-time default rather than
+ *              the n_ctx the server was actually started with.
+ *   error    — the provider REJECTED a request and stated its own maximum. The
+ *              strongest evidence available short of the user, and free: the
+ *              request had already failed.
+ *   user     — typed in by hand. Final.
+ */
+const WINDOW_RANK = { guess: 0, name: 0, observed: 1, server: 2, error: 3, user: 4 };
+
+/**
+ * Fold what we just learned about a model into a settings patch.
+ *
+ * `facts` may carry any of: vision, contextWindow, charsPerToken. Each is
+ * guarded by the evidence that applies to it -- `source` for vision,
+ * `windowSource` for the window -- so learning one never suppresses the other.
+ */
+function learnModel(settings, providerId, modelId, facts, source = 'server', { override = false, windowSource } = {}) {
   const model = String(modelId || '').trim();
   if (!providerId || !model) return null;
   const key = capabilityKey(providerId, model);
   const prev = ((settings && settings.modelInfo) || {})[key] || {};
-  if (!override && INFO_RANK[prev.source] > INFO_RANK[source]) return null;
 
-  const next = { ...prev, source };
-  if (typeof facts.vision === 'boolean') next.vision = facts.vision;
-  if (typeof facts.contextWindow === 'number') next.contextWindow = facts.contextWindow;
+  const next = { ...prev };
+  let changed = false;
+
+  if (typeof facts.vision === 'boolean') {
+    if (override || !(INFO_RANK[prev.source] > INFO_RANK[source])) {
+      if (next.vision !== facts.vision || prev.source !== source) changed = true;
+      next.vision = facts.vision;
+      next.source = source;
+    }
+  } else if (prev.source !== source && (override || !(INFO_RANK[prev.source] > INFO_RANK[source]))) {
+    // Keep the old behaviour for callers that pass a source but no vision fact.
+    if (facts.contextWindow == null && facts.charsPerToken == null) {
+      next.source = source;
+      changed = true;
+    }
+  }
+
+  if (typeof facts.contextWindow === 'number') {
+    const ws = windowSource || source;
+    const prevWs = prev.windowSource || (typeof prev.contextWindow === 'number' ? (prev.source || 'server') : null);
+    const beaten = prevWs && WINDOW_RANK[prevWs] > WINDOW_RANK[ws];
+    /**
+     * An 'observed' floor may only ever RAISE the number.
+     *
+     * It is evidence that a prompt of that size fit, which says nothing about
+     * the ceiling. Letting it lower a known window would shrink a 128k model to
+     * whatever the last short question happened to be.
+     */
+    const lowering = typeof next.contextWindow === 'number' && facts.contextWindow < next.contextWindow;
+    const allowed = override || (!beaten && !(ws === 'observed' && lowering));
+    if (allowed && next.contextWindow !== facts.contextWindow) {
+      next.contextWindow = facts.contextWindow;
+      next.windowSource = ws;
+      changed = true;
+    } else if (allowed && next.windowSource !== ws) {
+      next.windowSource = ws;
+      changed = true;
+    }
+  }
+
+  if (typeof facts.charsPerToken === 'number') {
+    // A measurement, not a claim: no ranking, the newest blended value wins.
+    if (next.charsPerToken !== facts.charsPerToken) {
+      next.charsPerToken = facts.charsPerToken;
+      changed = true;
+    }
+  }
+
   // Nothing new to say is not a write.
-  if (next.vision === prev.vision && next.contextWindow === prev.contextWindow
-      && prev.source === source) return null;
-  return { modelInfo: { [key]: next } };
+  return changed ? { modelInfo: { [key]: next } } : null;
 }
 
 /**
@@ -589,6 +690,7 @@ async function discoverModels(settings, id, { timeoutMs = 6000, force = false } 
 module.exports = {
   BUILTIN, BUILTIN_ORDER, NO_KEY, OPENAI_COMPATIBLE,
   list, get, labelOf, resolve, resolveTier, routeFor, TIERS, ROUTE_TIERS,
-  capabilityKey, modelInfoFor, visionFor, contextWindowFor, learnModel,
+  capabilityKey, modelInfoFor, visionFor, contextWindowFor, contextBudgetFor,
+  charsPerTokenFor, learnModel, INFO_RANK, WINDOW_RANK,
   discoverModels, clearDiscoveryCache, classifyModel, readContextWindow, readModalities, httpHint
 };

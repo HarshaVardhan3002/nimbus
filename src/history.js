@@ -158,7 +158,13 @@ function save(session) {
 /** Fields of a message that are annotation rather than content. */
 function metaOf(m) {
   const out = {};
-  for (const k of ['mode', 'model', 'provider', 'tier']) {
+  // 'kind', 'gist' and the span bounds belong to audio digests (role 'note'):
+  // without them a replayed session cannot tell a digest from an ordinary note,
+  // or say which stretch of audio it covered.
+  // 'covers' and 'folded' belong to a compaction (role 'summary'): without
+  // 'covers' a reloaded session cannot tell which turns the summary replaces,
+  // and would send both the summary and everything it already accounts for.
+  for (const k of ['mode', 'model', 'provider', 'tier', 'kind', 'gist', 'from', 'to', 'covers', 'folded']) {
     if (m[k] != null) out[k] = m[k];
   }
   return Object.keys(out).length ? out : null;
@@ -200,15 +206,45 @@ function append(session, role, content, meta) {
  * Returns [{ role, text }] excluding the message currently being composed.
  * Assistant turns are included so follow-ups actually resolve pronouns; without
  * them "explain that differently" has nothing to refer to.
+ *
+ * A compacted conversation returns one entry with role 'summary' at the front,
+ * followed by every turn that compaction did not fold in. The caller expands
+ * that entry into whatever prefill wording it uses (see prompts.compactPrefill)
+ * -- this module owns the shape of a conversation, not the wording of a prompt.
+ *
+ * The `limit` applies only to the turns AFTER the summary. It is a latency guard
+ * on live turns, and applying it across a fold would drop the recent detail the
+ * compaction deliberately kept verbatim.
  */
 function contextTurns(session, limit) {
   if (!session || !Array.isArray(session.messages)) return [];
   const n = typeof limit === 'number' ? limit : DEFAULT_CONTEXT_TURNS;
   if (n <= 0) return [];
-  return session.messages
-    .filter((m) => (m.role === 'user' || m.role === 'assistant') && String(m.content || '').trim())
-    .slice(-n)
-    .map((m) => ({ role: m.role, text: m.content }));
+  const msgs = session.messages;
+
+  // Only the newest compaction counts: each one folds its predecessor in, so
+  // injecting an older one too would present the same material twice at two
+  // different levels of detail.
+  let summary = null;
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    const m = msgs[i];
+    if (m.role === 'summary' && String(m.content || '').trim()) {
+      summary = { text: m.content, covers: Number.isFinite(m.covers) ? m.covers : -1 };
+      break;
+    }
+  }
+
+  const live = [];
+  for (let i = 0; i < msgs.length; i++) {
+    if (summary && i <= summary.covers) continue;
+    const m = msgs[i];
+    if (m.role !== 'user' && m.role !== 'assistant') continue;
+    if (!String(m.content || '').trim()) continue;
+    live.push({ role: m.role, text: m.content });
+  }
+
+  const tail = live.slice(-n);
+  return summary ? [{ role: 'summary', text: summary.text }].concat(tail) : tail;
 }
 
 /** Newest sessions first, with the counts and preview the list renders. */

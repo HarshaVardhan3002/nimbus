@@ -158,7 +158,34 @@ const DEFAULTS = {
     preRollMs: 300,
     wakeWord: 'hey nimbus',
     wakeWordEnabled: false,
-    autoRespondOnWake: true
+    autoRespondOnWake: true,
+
+    /**
+     * What Nimbus does with system audio on its own. See src/digest.js.
+     *
+     *   'off'       — transcribe and display only, as before.
+     *   'summarize' — a short running account of what is being said. Default.
+     *   'translate' — the heard speech rendered into stt.targetLang.
+     *   'both'      — translation followed by the gist.
+     *
+     * This is the setting that costs money while it is on: a session that never
+     * stops producing speech produces a model call every few minutes for as long
+     * as it runs. The triggers below decide how often.
+     */
+    digest: 'summarize',
+    /** Silence that ends a block. The natural boundary in a conversation. */
+    digestSilenceMs: 5000,
+    /** Freshness ceiling for audio that never pauses. */
+    digestCeilingMs: 180000,
+    /**
+     * Size cap on a block, in estimated tokens. This, not the clock, is what
+     * bounds how much text a single digest has to reason over -- a wall-clock
+     * interval covers three times as much speech in dense narration as it does
+     * in a meeting with pauses.
+     */
+    digestMaxTokens: 900,
+    /** Below this many words a block is held rather than digested. */
+    digestMinWords: 40
   },
 
   // Local single-slot servers unload the model on idle; measured 15s reload
@@ -172,6 +199,21 @@ const DEFAULTS = {
     // Prior turns fed back to the model. Every turn is prompt the model must
     // re-read, so this trades follow-up quality against latency.
     contextTurns: 12
+  },
+
+  context: {
+    /**
+     * Compress the conversation instead of silently forgetting the start of it.
+     *
+     * On by default. The alternative is what happened before: contextTurns
+     * sliced to the last twelve exchanges and everything older stopped
+     * existing, with nothing on screen to say so.
+     */
+    autoCompact: true,
+    /** Fraction of the usable window at which that happens. See src/compact.js. */
+    triggerPct: 0.55,
+    /** Exchanges always sent verbatim, never folded. */
+    keepHot: 6
   },
 
   reply: {

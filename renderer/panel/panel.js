@@ -177,6 +177,116 @@
     messages.scrollTop = messages.scrollHeight;
   }
 
+  /**
+   * An audio digest: what Nimbus heard while nobody asked it anything.
+   *
+   * Rendered as marginalia rather than as a turn -- no bubble, dimmer, clamped
+   * to a couple of lines until clicked. It is not a participant in the
+   * conversation and must not read like one, or a long meeting turns the chat
+   * into a wall of unread machine output with the user's own thread lost in it.
+   */
+  function addDigest(d) {
+    const text = (d && d.text) || '';
+    if (!text.trim()) return;
+
+    const wrap = document.createElement('details');
+    wrap.className = 'digest';
+
+    const sum = document.createElement('summary');
+    const when = new Date(d.to || Date.now())
+      .toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const secs = d.from && d.to ? Math.round((d.to - d.from) / 1000) : 0;
+
+    const tag = document.createElement('span');
+    tag.className = 'digest-tag';
+    // The glyph says which of the two jobs produced this, since a translation
+    // and a summary of the same stretch look nothing alike.
+    tag.innerHTML = icon(d.kind === 'translation' ? 'languages' : 'volume-2', { size: 12 });
+
+    const line = document.createElement('span');
+    line.className = 'digest-gist';
+    // The gist, not the body: one glanceable line is the whole point of the
+    // collapsed state, and the body is one click away.
+    line.textContent = d.gist || text.split('\n')[0];
+
+    const meta = document.createElement('span');
+    meta.className = 'digest-meta';
+    meta.textContent = secs ? when + ' · ' + secs + 's' : when;
+
+    sum.appendChild(tag);
+    sum.appendChild(line);
+    sum.appendChild(meta);
+
+    const body = document.createElement('div');
+    body.className = 'digest-body';
+    body.innerHTML = renderMarkdown(text);
+
+    wrap.appendChild(sum);
+    wrap.appendChild(body);
+    attachCopy(wrap, () => text);
+
+    // Only follow the tail if the user is already reading it. Yanking the view
+    // down mid-sentence because a meeting produced a summary is hostile.
+    const atBottom = messages.scrollHeight - messages.scrollTop - messages.clientHeight < 60;
+    messages.appendChild(wrap);
+    if (atBottom) messages.scrollTop = messages.scrollHeight;
+    reportSize();
+  }
+
+  /**
+   * A compaction marker: the point where earlier turns stopped being sent
+   * verbatim.
+   *
+   * Shown, not hidden, because the alternative is what this replaced -- silent
+   * truncation, where the assistant forgot and nothing on screen said why. The
+   * originals are all still above it and still searchable; this only marks what
+   * the model now reads instead of them, and opening it shows exactly that.
+   */
+  function addFold(m) {
+    const text = String((m && m.content) || '');
+    if (!text.trim()) return;
+
+    const wrap = document.createElement('details');
+    wrap.className = 'digest fold';
+
+    const sum = document.createElement('summary');
+
+    const tag = document.createElement('span');
+    tag.className = 'digest-tag';
+    tag.innerHTML = icon('history', { size: 12 });
+
+    const line = document.createElement('span');
+    line.className = 'digest-gist';
+    const n = Number(m.folded) || 0;
+    line.textContent = n
+      ? n + (n === 1 ? ' earlier message' : ' earlier messages') + ' compressed to fit the context'
+      : 'Earlier messages compressed to fit the context';
+
+    const meta = document.createElement('span');
+    meta.className = 'digest-meta';
+    meta.textContent = new Date(m.ts || Date.now())
+      .toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+    sum.appendChild(tag);
+    sum.appendChild(line);
+    sum.appendChild(meta);
+
+    const body = document.createElement('div');
+    body.className = 'digest-body fold-body';
+    // Deliberately not markdown: this is a fixed-section document, and letting
+    // its headings render as prose would hide the structure the model relies on.
+    body.textContent = text;
+
+    wrap.appendChild(sum);
+    wrap.appendChild(body);
+    attachCopy(wrap, () => text);
+
+    const atBottom = messages.scrollHeight - messages.scrollTop - messages.clientHeight < 60;
+    messages.appendChild(wrap);
+    if (atBottom) messages.scrollTop = messages.scrollHeight;
+    reportSize();
+  }
+
   function startAi(small) {
     const wrap = document.createElement('div');
     wrap.className = 'turn turn-ai';
@@ -295,7 +405,9 @@
     syncPlaceholder();
     runMode('ask', text);
   }
-  function stop() { if (busy) app.abort(); }
+  // A compaction can be running with no request behind it, started from the
+  // popover. It is still the thing the user is waiting on, so Stop still stops it.
+  function stop() { if (busy || compacting) app.abort(); }
   sendBtn.addEventListener('click', () => (busy ? stop() : send()));
   input.addEventListener('keydown', (e) => {
     if (e.key !== 'Enter') return;
@@ -316,6 +428,39 @@
     $('#smart').classList.toggle('on', settings.smart);
     await app.settingsSet({ smart: settings.smart });
     refreshModelChip();
+  });
+
+  $('#model-chip').addEventListener('click', (e) => {
+    e.stopPropagation();
+    toggleContextPop();
+  });
+  $('#ctx-compact').addEventListener('click', async (e) => {
+    e.stopPropagation();
+    if (compacting) { app.abort(); return; }
+    // Optimistic, because main broadcasts compact:state only once it has decided
+    // there is something to do -- and a button that stays idle after a click
+    // reads as a dead button.
+    compacting = true;
+    paintCompactBtn();
+    try {
+      const res = await app.compactNow();
+      // A cancel is the user getting what they asked for, not a failure.
+      if (res && !res.ok && !res.cancelled) showNotice(res.reason || 'Could not compress.', 'warn');
+    } catch (err) {
+      showNotice((err && err.message) || 'Could not compress.', 'warn');
+    } finally {
+      compacting = false;
+      paintCompactBtn();
+    }
+  });
+  // Click-away, like every other transient surface in the panel. Registered on
+  // the document rather than a backdrop so it never steals a click from the
+  // composer underneath it.
+  document.addEventListener('click', (e) => {
+    const pop = $('#ctx-pop');
+    if (pop.classList.contains('hidden')) return;
+    if (pop.contains(e.target) || $('#model-chip').contains(e.target)) return;
+    toggleContextPop(false);
   });
 
   // ---- settings view -------------------------------------------------------
@@ -469,7 +614,11 @@
     $('#convo-title').textContent = (s && s.title) || 'New conversation';
     for (const m of ((s && s.messages) || [])) {
       if (m.role === 'user') addUser(m.content);
-      else if (m.role === 'assistant') {
+      else if (m.role === 'note') {
+        addDigest({ text: m.content, gist: m.gist, kind: m.kind, from: m.from, to: m.to || m.ts });
+      } else if (m.role === 'summary') {
+        addFold(m);
+      } else if (m.role === 'assistant') {
         const wrap = document.createElement('div');
         wrap.className = 'turn turn-ai';
         const el = document.createElement('div');
@@ -591,6 +740,7 @@
       }
       inp.value = r.model || '';
       syncVisionOverride(tier);
+      syncWindowOverride(tier);
       updateRouteHint(tier);
       // Populate this route's suggestions from ITS provider. One shared datalist
       // offered Ollama's models while editing an OpenAI route.
@@ -704,8 +854,71 @@
     updateRouteHint(tier);
   }
 
+  /** Short form of the same evidence the popover spells out. */
+  const WINDOW_SOURCE_SHORT = {
+    guess: 'assumed', name: 'from the name', observed: 'seen in use',
+    server: 'declared', error: 'stated by the provider', user: 'set by you'
+  };
+
+  /**
+   * Show what Nimbus worked out, and let it be corrected.
+   *
+   * The field is empty unless the user typed something: the placeholder carries
+   * the learned figure and where it came from, so an override is always a
+   * deliberate act and clearing the box restores automatic detection.
+   */
+  function syncWindowOverride(tier) {
+    const inp = $('#f-' + tier + '-window');
+    if (!inp) return;
+    const r = (settings.routes || {})[tier] || {};
+    const key = (r.provider || '') + '::' + (r.model || '').trim();
+    const info = (settings.modelInfo || {})[key] || {};
+    const mine = info.windowSource === 'user' && typeof info.contextWindow === 'number';
+
+    inp.value = mine ? String(info.contextWindow) : '';
+    if (typeof info.contextWindow === 'number' && !mine) {
+      inp.placeholder = fmtCtx(info.contextWindow).replace(' ctx', '')
+        + ' · ' + (WINDOW_SOURCE_SHORT[info.windowSource] || 'declared');
+    } else if (!mine) {
+      inp.placeholder = 'auto';
+    }
+  }
+
+  async function persistWindowOverride(tier) {
+    const inp = $('#f-' + tier + '-window');
+    const r = (settings.routes || {})[tier] || {};
+    const model = (r.model || '').trim();
+    if (!inp || !r.provider || !model) return;
+    const key = r.provider + '::' + model;
+
+    // "32k", "32,768" and "32768" all mean the same thing to someone reading a
+    // model card, so all three are accepted.
+    const raw = inp.value.trim().toLowerCase().replace(/,/g, '');
+    const m = /^(\d+(?:\.\d+)?)\s*([km])?$/.exec(raw);
+    let n = null;
+    if (m) {
+      const mult = m[2] === 'm' ? 1000000 : m[2] === 'k' ? 1000 : 1;
+      const v = Math.round(parseFloat(m[1]) * mult);
+      if (v >= 512 && v <= 10000000) n = v;
+    }
+    // Anything unparseable clears the override rather than being stored as junk.
+    if (raw && n == null) inp.value = '';
+
+    const entry = Object.assign({}, (settings.modelInfo || {})[key], {
+      contextWindow: n,
+      // null, not 'auto': contextBudgetFor reads the number, and clearing the
+      // source is what lets the server answer again.
+      windowSource: n == null ? null : 'user'
+    });
+    settings.modelInfo = Object.assign({}, settings.modelInfo, { [key]: entry });
+    await app.settingsSet({ modelInfo: { [key]: entry } });
+    syncWindowOverride(tier);
+    updateRouteHint(tier);
+  }
+
   for (const tier of ['fast', 'smart']) {
     $('#f-' + tier + '-vision').addEventListener('change', () => persistVisionOverride(tier));
+    $('#f-' + tier + '-window').addEventListener('change', () => persistWindowOverride(tier));
   }
 
   /**
@@ -816,6 +1029,9 @@
     $('#vad-val').textContent = describeSensitivity(a.vadThreshold || 0.010);
     $('#f-hangover').value = a.silenceHangoverMs || 550;
     $('#hangover-val').textContent = (a.silenceHangoverMs || 550) + 'ms';
+    $('#f-digest').value = a.digest || 'summarize';
+    $('#f-digest-ceiling').value = Math.round((a.digestCeilingMs || 180000) / 1000);
+    syncDigestRows();
     $('#f-listen-launch').checked = !!a.listenOnLaunch;
     $('#f-wake').checked = !!a.wakeWordEnabled;
     $('#f-wake-word').value = a.wakeWord || 'hey nimbus';
@@ -872,6 +1088,31 @@
    * a chord bound where the native layer cannot give a key-up, which silently
    * turns hold-to-talk into press-to-toggle.
    */
+  /**
+   * Says, in words, what turning this on will actually do -- including that it
+   * costs a model call every few minutes. A setting that quietly starts
+   * spending money on a timer should say so where it is switched on, not in a
+   * changelog.
+   */
+  function syncDigestRows() {
+    const mode = $('#f-digest').value;
+    const secs = Number($('#f-digest-ceiling').value) || 180;
+    const mins = secs % 60 === 0 ? (secs / 60) + ' min' : secs + 's';
+    $('#digest-ceiling-val').textContent = mins;
+    $('#f-digest-ceiling').closest('.s-row').classList.toggle('hidden', mode === 'off');
+
+    const lang = ($('#f-target-lang').value || 'English').trim();
+    const what = {
+      off: 'System audio is transcribed and shown, and nothing else happens to it.',
+      summarize: 'Nimbus writes a short running account of what it hears, using the Fast model.',
+      translate: 'Nimbus renders what it hears into ' + lang + ', using the Fast model.',
+      both: 'Nimbus renders what it hears into ' + lang + ' and adds a short summary, using the Fast model.'
+    }[mode] || '';
+    $('#digest-hint').textContent = mode === 'off'
+      ? what
+      : what + ' Expect one call per pause in the audio, and at most one every ' + mins + ' during unbroken audio.';
+  }
+
   function syncSourceRows() {
     const mode = $('#f-mic-mode').value;
     const sys = $('#f-system-audio').checked;
@@ -1024,6 +1265,7 @@
       const list = $('#model-list-' + tier);
       fillDatalist(list, tier === 'vision' ? chat.filter((m) => m.vision) : chat);
       syncVisionOverride(tier);
+      syncWindowOverride(tier);
       updateRouteHint(tier);
     }
 
@@ -1122,6 +1364,8 @@
     const v = $('#f-target-lang').value.trim() || 'English';
     $('#f-target-lang').value = v;
     settings.stt = Object.assign({}, settings.stt, { targetLang: v });
+    // The digest hint names the language it will translate into.
+    syncDigestRows();
     await app.settingsSet({ stt: settings.stt });
   });
 
@@ -1241,6 +1485,17 @@
     settings.audio = Object.assign({}, settings.audio, { silenceHangoverMs: v });
     await app.settingsSet({ audio: settings.audio });
   });
+  $('#f-digest').addEventListener('change', async () => {
+    syncDigestRows();
+    settings.audio = Object.assign({}, settings.audio, { digest: $('#f-digest').value });
+    await app.settingsSet({ audio: settings.audio });
+  });
+  $('#f-digest-ceiling').addEventListener('input', async () => {
+    const v = Number($('#f-digest-ceiling').value) * 1000;
+    syncDigestRows();
+    settings.audio = Object.assign({}, settings.audio, { digestCeilingMs: v });
+    await app.settingsSet({ audio: settings.audio });
+  });
   $('#f-listen-launch').addEventListener('change', async () => {
     settings.audio = Object.assign({}, settings.audio, { listenOnLaunch: $('#f-listen-launch').checked });
     await app.settingsSet({ audio: settings.audio });
@@ -1354,6 +1609,83 @@
     reportSize();
   });
 
+  // ---- context fill --------------------------------------------------------
+  /** Last snapshot from main, so the popover can be opened without a round trip. */
+  let ctx = null;
+
+  function fmtTokens(n) {
+    if (!Number.isFinite(n)) return '—';
+    if (n < 1000) return String(Math.round(n));
+    const k = n / 1000;
+    return (k < 10 ? k.toFixed(1).replace(/\.0$/, '') : Math.round(k)) + 'k';
+  }
+
+  /** How the window was arrived at, in words the user can act on. */
+  const WINDOW_SOURCE = {
+    guess: 'assumed — this server declares no window',
+    name: 'read from the model name',
+    observed: 'at least this big, seen in use',
+    server: 'declared by the server',
+    error: 'stated by the provider',
+    user: 'set by you'
+  };
+
+  function paintContext(c) {
+    ctx = c || null;
+    const rail = $('#ctx-rail');
+    if (!ctx) { rail.classList.add('hidden'); $('#ctx-pop').classList.add('hidden'); return; }
+
+    const pct = Math.max(0, Math.min(1, ctx.pct || 0));
+    rail.classList.remove('hidden');
+    rail.classList.toggle('guessed', !!ctx.guessed);
+    rail.dataset.level = pct >= 0.9 ? 'hot' : pct >= 0.75 ? 'high' : pct >= 0.6 ? 'warm' : 'ok';
+    rail.firstElementChild.style.width = (pct * 100).toFixed(1) + '%';
+
+    $('#ctx-pct').textContent = Math.round(pct * 100) + '% of context used';
+    $('#ctx-model').textContent = ctx.model || '';
+    $('#ctx-bar-fill').style.width = (pct * 100).toFixed(1) + '%';
+
+    const lines = [
+      fmtTokens(ctx.used) + ' of ' + fmtTokens(ctx.usable) + ' usable · '
+        + fmtTokens(ctx.reply) + ' held back for the reply',
+      'Window ' + (ctx.guessed ? '~' : '') + fmtTokens(ctx.window)
+        + ' — ' + (WINDOW_SOURCE[ctx.source] || ctx.source),
+      ctx.calibrated
+        ? 'Counted with this model’s own token figures'
+        : 'Estimated from characters until the model reports usage'
+    ];
+    if (ctx.compacted) lines.push('Earlier turns are already folded into a summary');
+    $('#ctx-lines').innerHTML = '';
+    for (const l of lines) {
+      const d = document.createElement('div');
+      d.textContent = l;
+      $('#ctx-lines').appendChild(d);
+    }
+    paintCompactBtn();
+  }
+
+  /** True while main is compressing, so the button cannot be pressed twice. */
+  let compacting = false;
+
+  function paintCompactBtn() {
+    const btn = $('#ctx-compact');
+    if (!btn) return;
+    // While it runs the button becomes its own cancel. A disabled "Compressing…"
+    // would leave a long call with no way out except the timeout.
+    btn.disabled = !ctx;
+    btn.textContent = compacting ? 'Stop compressing' : 'Compress now';
+    btn.title = compacting
+      ? 'Stop. The conversation is left exactly as it is.'
+      : 'Fold the earlier turns into a summary, on the smart model. Nothing is deleted.';
+  }
+
+  function toggleContextPop(force) {
+    const pop = $('#ctx-pop');
+    const open = force != null ? force : pop.classList.contains('hidden');
+    pop.classList.toggle('hidden', !open || !ctx);
+    $('#model-chip').setAttribute('aria-expanded', String(open && !!ctx));
+  }
+
   function refreshModelChip() {
     // Reads the ACTIVE TIER'S route, so the chip shows what will actually answer.
     const tier = settings.smart ? 'smart' : 'fast';
@@ -1404,7 +1736,20 @@
     showNotice(message, 'error');
   });
   app.on('status', ({ message, level }) => showNotice(message, level || 'info'));
+  app.on('audio:digest', (d) => addDigest(d));
   app.on('settings:changed', (s) => { settings = s; refreshModelChip(); });
+  app.on('context:usage', (c) => paintContext(c));
+  app.on('compact:state', (s) => { compacting = !!(s && s.active); paintCompactBtn(); });
+  app.on('compact:done', (r) => {
+    // The marker goes in from the broadcast rather than from a reload: the
+    // session on screen is the live one, and re-rendering it would scroll the
+    // user away from whatever they were reading.
+    addFold({ content: (r && r.text) || '', folded: r && r.turns, ts: r && r.ts });
+    if (r && r.before && r.after) {
+      showNotice('Compressed ' + r.turns + ' earlier messages. Context is back to '
+        + Math.round((r.after / r.before) * 100) + '% of what it was.', 'info');
+    }
+  });
   app.on('panel:focus-input', () => { input.focus(); });
   app.on('open-settings', () => showSettings(true));
   app.on('history:changed', ({ title }) => { if (title) $('#convo-title').textContent = title; });
@@ -1416,6 +1761,7 @@
       // Cancelling the answer outranks closing the panel. Hiding the window
       // while a stream is live left it running, billing and unreadable.
       if (busy) { e.preventDefault(); stop(); return; }
+      if (!$('#ctx-pop').classList.contains('hidden')) { e.preventDefault(); toggleContextPop(false); return; }
       if (!$('#view-settings').classList.contains('hidden')) persistProvider().then(() => showView('chat'));
       else if (!$('#view-history').classList.contains('hidden')) showView('chat');
       else app.togglePanel({});
@@ -1485,6 +1831,11 @@
       const cur = await app.historyCurrent();
       if (cur && cur.messages && cur.messages.length) renderSession(cur);
     } catch { /* no session simply means an empty chat */ }
+
+    // Pulled once: the panel is created after main has already broadcast
+    // whatever it knew, so without this the rail stays blank until the first
+    // question of the session.
+    try { paintContext(await app.contextUsage()); } catch { /* no route configured yet */ }
 
     syncPlaceholder();
     reportSize();

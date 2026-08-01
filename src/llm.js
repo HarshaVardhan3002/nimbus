@@ -10,6 +10,7 @@
  */
 
 const providers = require('./providers');
+const tokens = require('./tokens');
 // Clients are pooled; see src/clients.js for why they are not built per request.
 // The require() calls below stay lazy on purpose -- Node memoises them, so they
 // cost once per process, and hoisting them would pull three SDKs into app
@@ -44,6 +45,33 @@ function throwIfStreamError(part) {
   e.providerType = err.type || null;
   e.inStream = true;
   throw e;
+}
+
+/**
+ * Token usage, if the provider volunteered it.
+ *
+ * Deliberately never REQUESTED. The OpenAI wire format hides per-stream usage
+ * behind `stream_options: {include_usage: true}`, and strict OpenAI-compatible
+ * servers reject a request body carrying parameters they do not implement -- so
+ * asking for the number would break working local setups to gain something the
+ * app can live without. Most servers send it unasked anyway; the ones that do
+ * not fall back to the chars/4 estimate, which is what was used before this
+ * existed. One real prompt_tokens is worth a lot (it calibrates the estimate for
+ * that model's tokenizer), but not at the cost of a request that now 400s.
+ *
+ * The three wire formats spell the same two numbers differently, so the field
+ * names are collapsed here rather than in each transport.
+ */
+function emitUsage(onUsage, raw) {
+  if (typeof onUsage !== 'function' || !raw) return;
+  const pick = (...vals) => {
+    for (const v of vals) if (typeof v === 'number' && Number.isFinite(v) && v > 0) return v;
+    return null;
+  };
+  const promptTokens = pick(raw.prompt_tokens, raw.input_tokens, raw.promptTokenCount);
+  const completionTokens = pick(raw.completion_tokens, raw.output_tokens, raw.candidatesTokenCount);
+  if (promptTokens == null && completionTokens == null) return;
+  onUsage({ promptTokens, completionTokens });
 }
 
 /** Does this failure look like "the model cannot accept an image"? */
@@ -107,7 +135,7 @@ function emptyAnswerError(model, reasoningChars, finishReason) {
 }
 
 // ------------------------------------------------------------------ openai
-async function streamOpenAI({ apiKey, model, baseURL, system, turns, imageDataUrl, maxTokens, onToken, onReasoning, onNotice, signal }) {
+async function streamOpenAI({ apiKey, model, baseURL, system, turns, imageDataUrl, maxTokens, onToken, onReasoning, onNotice, onUsage, signal }) {
   const OpenAI = require('openai');
   const client = cachedClient('openai', baseURL, apiKey, () => new OpenAI({
     apiKey: apiKey || providers.NO_KEY,
@@ -143,8 +171,13 @@ async function streamOpenAI({ apiKey, model, baseURL, system, turns, imageDataUr
   let full = '';
   let reasoning = '';
   let finishReason = null;
+  let usage = null;
   for await (const part of stream) {
     throwIfStreamError(part);
+    // Sent unasked by llama.cpp, Ollama and most hosted servers, usually on the
+    // final frame. Absent on strict OpenAI without stream_options, which is why
+    // nothing downstream may depend on it.
+    if (part && part.usage) usage = part.usage;
     const choice = part && part.choices && part.choices[0];
     if (choice && choice.finish_reason) finishReason = choice.finish_reason;
     const delta = choice && choice.delta;
@@ -153,6 +186,7 @@ async function streamOpenAI({ apiKey, model, baseURL, system, turns, imageDataUr
     const r = reasoningDelta(delta);
     if (r) { reasoning += r; if (onReasoning) onReasoning(r); }
   }
+  emitUsage(onUsage, usage);
 
   // Silence is never an acceptable outcome. Either the model thought itself out
   // of tokens (actionable, so say so), or the server returned nothing at all.
@@ -168,7 +202,7 @@ async function streamOpenAI({ apiKey, model, baseURL, system, turns, imageDataUr
 }
 
 // --------------------------------------------------------------- anthropic
-async function streamAnthropic({ apiKey, model, system, turns, imageDataUrl, maxTokens, onToken, onReasoning, onNotice, signal }) {
+async function streamAnthropic({ apiKey, model, system, turns, imageDataUrl, maxTokens, onToken, onReasoning, onNotice, onUsage, signal }) {
   const Anthropic = require('@anthropic-ai/sdk');
   const client = cachedClient('anthropic', '', apiKey, () => new Anthropic({ apiKey, maxRetries: 1 }));
 
@@ -192,8 +226,17 @@ async function streamAnthropic({ apiKey, model, system, turns, imageDataUrl, max
   let full = '';
   let reasoning = '';
   let stopReason = null;
+  // Anthropic splits the two halves across the stream: the input count arrives
+  // up front on message_start, the output count only at the end.
+  const usage = {};
   for await (const ev of stream) {
-    if (ev.type === 'message_delta' && ev.delta && ev.delta.stop_reason) stopReason = ev.delta.stop_reason;
+    if (ev.type === 'message_start' && ev.message && ev.message.usage) {
+      Object.assign(usage, ev.message.usage);
+    }
+    if (ev.type === 'message_delta') {
+      if (ev.usage) Object.assign(usage, ev.usage);
+      if (ev.delta && ev.delta.stop_reason) stopReason = ev.delta.stop_reason;
+    }
     if (ev.type !== 'content_block_delta' || !ev.delta) continue;
     if (ev.delta.type === 'text_delta') {
       full += ev.delta.text;
@@ -205,6 +248,7 @@ async function streamAnthropic({ apiKey, model, system, turns, imageDataUrl, max
       if (onReasoning) onReasoning(ev.delta.thinking);
     }
   }
+  emitUsage(onUsage, usage);
 
   if (!full.trim()) {
     if (reasoning.trim()) throw emptyAnswerError(model, reasoning.trim().length, stopReason === 'max_tokens' ? 'length' : stopReason);
@@ -218,7 +262,7 @@ async function streamAnthropic({ apiKey, model, system, turns, imageDataUrl, max
 }
 
 // ------------------------------------------------------------------ gemini
-async function streamGemini({ apiKey, model, system, turns, imageDataUrl, maxTokens, onToken, onReasoning }) {
+async function streamGemini({ apiKey, model, system, turns, imageDataUrl, maxTokens, onToken, onReasoning, onUsage }) {
   const { GoogleGenAI } = require('@google/genai');
   const ai = cachedClient('gemini', '', apiKey, () => new GoogleGenAI({ apiKey }));
 
@@ -240,7 +284,10 @@ async function streamGemini({ apiKey, model, system, turns, imageDataUrl, maxTok
 
   let full = '';
   let reasoning = '';
+  let usage = null;
   for await (const chunk of stream) {
+    // Repeated on every chunk and cumulative, so the last one seen is the total.
+    if (chunk && chunk.usageMetadata) usage = chunk.usageMetadata;
     /**
      * Thinking parts are marked `thought: true` and must not be concatenated
      * into the answer. `chunk.text` throws them in together, so the parts are
@@ -258,6 +305,7 @@ async function streamGemini({ apiKey, model, system, turns, imageDataUrl, maxTok
     const t = chunk && chunk.text;
     if (t) { full += t; onToken(t); }
   }
+  emitUsage(onUsage, usage);
 
   if (!full.trim()) {
     if (reasoning.trim()) throw emptyAnswerError(model, reasoning.trim().length, null);
@@ -349,7 +397,7 @@ function createLLM(settings, tierOrId) {
     ready: p.ready,
     reason: p.reason,
 
-    async stream({ system, turns, imageDataUrl, onToken, onReasoning, signal, maxTokens = 4096, onNotice }) {
+    async stream({ system, turns, imageDataUrl, onToken, onReasoning, signal, maxTokens = 4096, onNotice, onUsage }) {
       const transport = TRANSPORTS[p.kind];
       if (!transport) throw new Error('No transport for provider kind "' + p.kind + '".');
 
@@ -376,6 +424,7 @@ function createLLM(settings, tierOrId) {
         onToken,
         onReasoning,
         onNotice,
+        onUsage,
         signal
       });
 
@@ -391,6 +440,22 @@ function createLLM(settings, tierOrId) {
         const out = new Error(explain(e, p));
         if (e && e.emptyAnswer) out.emptyAnswer = true;
         if (e && e.status) out.status = e.status;
+        /**
+         * A rejection that states the model's real window is the best evidence
+         * there is, and it is free -- the request had already failed. Read from
+         * the RAW message, before explain() reformats it, and carried out on the
+         * error so the caller can both record the number and tell the user that
+         * the conversation, not the provider, is what broke.
+         */
+        const limit = tokens.contextLimitFrom((e && e.message) || '');
+        if (limit) {
+          out.contextLimit = limit;
+          out.contextOverflow = true;
+          // Named here because the caller's handle on which model was used is
+          // scoped to the try block that just unwound.
+          out.provider = p.id;
+          out.model = p.model;
+        }
         throw out;
       };
 
@@ -409,8 +474,15 @@ function createLLM(settings, tierOrId) {
          * what the user actually wanted.
          *
          * Only ever retried once, and only when an image was actually sent.
+         *
+         * Skipped when the provider stated a context limit. An image is worth
+         * hundreds of tokens, so dropping it can genuinely make an overflowing
+         * request fit -- and the retry would then SUCCEED, which this code reads
+         * as proof the model is blind and caches forever. A sighted model would
+         * be permanently demoted by one over-long conversation.
          */
-        if (image && looksLikeVisionRejection(err)) {
+        if (image && !err.contextOverflow && !tokens.contextLimitFrom((err && err.message) || '')
+            && looksLikeVisionRejection(err)) {
           try {
             const out = await run(null);
             if (typeof onNotice === 'function') {

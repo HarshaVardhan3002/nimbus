@@ -15,9 +15,15 @@ const { WindowManager } = require('./src/windows/manager');
 const { captureScreenshot } = require('./src/screen');
 const { createSTT } = require('./src/stt');
 const { createLLM, testConnection } = require('./src/llm');
-const { MODES } = require('./src/prompts');
+const {
+  MODES, DIGEST, buildDigest, splitDigest,
+  COMPACT, buildCompact, parseCompact, compactPrefill
+} = require('./src/prompts');
+const { estimateTurns, measureRatio, blendRatio } = require('./src/tokens');
 const { WarmthKeeper } = require('./src/warmth');
 const { PushToTalk } = require('./src/pushtotalk');
+const { createDigest } = require('./src/digest');
+const compact = require('./src/compact');
 const history = require('./src/history');
 const db = require('./src/db');
 
@@ -43,7 +49,16 @@ const state = {
   micOpen: false,      // the merged answer: is the mic feeding the model right now
   micClosedAt: 0,      // when it last closed, for the release grace window
   keyHeld: false,      // the global hold-to-talk chord
-  buttonHeld: false    // the pill's talk button
+  buttonHeld: false,   // the pill's talk button
+
+  // Compaction runs on the smart tier and is deliberately NOT part of
+  // `busy`: it happens inside a feature run, and sharing that latch would make
+  // the compaction refuse to start because the turn it is preparing for is busy.
+  compacting: false,
+  // Said once per conversation, not once per message: a window nobody declared
+  // is a standing condition, and repeating it every turn would train the user to
+  // dismiss the notice that matters.
+  warnedGuessFull: false
 };
 
 /**
@@ -62,11 +77,429 @@ const MAX_TRANSCRIPT = 400;
 
 let sttQueue = Promise.resolve();
 let abortController = null;
+/**
+ * The in-flight compaction, so Stop can reach it.
+ *
+ * Separate from `abortController` because the two are cancelled independently:
+ * aborting a compaction must not kill the answer, and a compaction started by
+ * the popover button has no request behind it at all. Stop cancels whichever
+ * ones are live -- from where the user sits, both are "the thing making me wait".
+ */
+let compactController = null;
+
+/**
+ * The consumer for heard system audio.
+ *
+ * Deliberately NOT routed through runFeature(). That path is behind one global
+ * `state.busy` latch, and a background job sharing it would mean either the
+ * user's question is refused because a digest is being written, or a digest is
+ * dropped because the user asked something. Neither is acceptable: this holds
+ * its own stream and never touches the latch.
+ *
+ * It runs on the FAST tier. A digest is a low-stakes, high-frequency job whose
+ * value decays in minutes, and the smart tier has to stay free for the work that
+ * genuinely needs recall.
+ */
+const DIGEST_TIMEOUT_MS = 60000;
+
+const digest = createDigest({
+  getSettings: () => store.getSettings(),
+  log: (...a) => log('[digest]', ...a),
+  onDigest: (block) => runDigest(block)
+});
+
+/**
+ * Write up one block of heard speech.
+ *
+ * Throwing is meaningful here: src/digest.js keeps the block's material pending
+ * on a rejection and retries it with whatever has been heard since, so a
+ * provider that is briefly down costs a delay rather than a hole in the record.
+ */
+async function runDigest(block) {
+  const settings = store.getSettings();
+  const def = DIGEST[block.mode] || DIGEST.summarize;
+
+  const llm = createLLM(settings, 'fast');
+  if (!llm.ready) throw new Error(llm.reason || 'No fast model configured.');
+
+  const targetLang = (settings.stt && settings.stt.targetLang) || 'English';
+  const inputTokens = estimateTurns(block.turns);
+
+  /**
+   * A digest that never returns would hold the queue shut forever, and audio
+   * would pile up behind a request that is not coming back. Bound it.
+   */
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), DIGEST_TIMEOUT_MS);
+
+  const system = def.system(targetLang);
+  const prompt = buildDigest({ turns: block.turns, gist: block.gist, targetLang });
+
+  let raw = '';
+  let usage = null;
+  try {
+    await llm.stream({
+      system,
+      turns: [{ role: 'user', text: prompt }],
+      maxTokens: def.budget(inputTokens),
+      signal: ac.signal,
+      onToken: (t) => { raw += t; },
+      onUsage: (u) => { usage = u; }
+    });
+  } finally {
+    clearTimeout(timer);
+  }
+
+  /**
+   * Calibrate from here too. A user who only listens never presses a button, so
+   * without this the fast model's tokenizer would stay a guess through an entire
+   * meeting -- and the digest is the one call that is guaranteed to have run.
+   */
+  recordContext({
+    provider: llm.provider,
+    model: llm.model,
+    promptChars: system.length + prompt.length,
+    outputChars: raw.length,
+    usage,
+    hadImage: false
+  });
+
+  const { gist, body } = splitDigest(raw);
+  const text = body || gist;
+  if (!text) throw new Error('The model returned an empty digest.');
+
+  const entry = {
+    seq: block.seq,
+    kind: def.label,
+    reason: block.reason,
+    gist,
+    text,
+    from: block.from,
+    to: block.to,
+    model: llm.model,
+    provider: llm.provider
+  };
+
+  broadcast('audio:digest', entry);
+  log('[digest] wrote #' + block.seq, '(' + block.reason + ')', gist);
+
+  /**
+   * Persisted with role 'note'.
+   *
+   * history.contextTurns() only ever returns user and assistant turns, so a
+   * note survives in the record and in full-text search without becoming prompt
+   * on the user's next question. That matters: forty audio digests silently
+   * prepended to a chat would consume the context window this feature's other
+   * half exists to protect.
+   */
+  if (!convo) convo = history.create(gist || 'Audio session');
+  history.append(convo, 'note', text, {
+    kind: def.label, gist, from: block.from, to: block.to,
+    model: llm.model, provider: llm.provider
+  });
+  if (history.save(convo)) broadcast('history:changed', { id: convo.id, title: convo.title });
+
+  return { gist };
+}
 
 // ---------------------------------------------------------------- helpers
 function broadcast(channel, data) { if (wm) wm.broadcast(channel, data); }
 function toPanel(channel, data) { if (wm) wm.sendToPanel(channel, data); }
 function notify(message, level) { broadcast('status', { message, level: level || 'info' }); }
+
+// ------------------------------------------------------------ context budget
+/**
+ * How much of the model's context window the conversation is using.
+ *
+ * Everything here is an estimate that improves with use. Two things are learned
+ * from ordinary traffic, both free:
+ *
+ *   the ratio    one real prompt_tokens against the characters we know we sent
+ *                measures that model's tokenizer on this user's actual language,
+ *                which is the difference between chars/4 being right and being
+ *                wrong by half for CJK.
+ *   the window   a request the provider ACCEPTED proves the window is at least
+ *                that big; a request it rejected with a stated maximum proves
+ *                exactly how big. Neither costs a round trip.
+ */
+function recordContext({ provider, model, promptChars, outputChars, usage, hadImage }) {
+  if (!provider || !model) return;
+  const settings = store.getSettings();
+  const facts = {};
+
+  const promptTokens = usage && typeof usage.promptTokens === 'number' ? usage.promptTokens : null;
+  const completionTokens = usage && typeof usage.completionTokens === 'number' ? usage.completionTokens : null;
+
+  /**
+   * Calibration is skipped when a screenshot was attached. An image is worth
+   * hundreds of tokens and almost no characters, so measuring the ratio from
+   * that turn would report a tokenizer several times denser than it is and then
+   * inflate every later estimate for this model.
+   */
+  if (!hadImage && promptTokens != null && promptChars > 0) {
+    const measured = measureRatio(promptChars, promptTokens);
+    if (measured != null) {
+      const blended = blendRatio(providers.charsPerTokenFor(settings, provider, model), measured);
+      if (blended != null) facts.charsPerToken = Math.round(blended * 100) / 100;
+    }
+  }
+
+  const cpt = facts.charsPerToken || providers.charsPerTokenFor(settings, provider, model);
+  let floor = null;
+  if (promptTokens != null) {
+    // The reply occupies the same window as the prompt, so both halves count.
+    floor = promptTokens + (completionTokens || 0);
+  } else if (promptChars > 0) {
+    /**
+     * No usage reported, so fall back to our own estimate of a prompt that
+     * demonstrably fit -- discounted by a fifth.
+     *
+     * The estimate can overshoot, and an overshooting "floor" is the one wrong
+     * direction that matters: it would claim a window bigger than the model has
+     * and remove the warning that exists to stop a request dying mid-answer.
+     * The discount keeps it a lower bound under ordinary estimation error.
+     */
+    const ratio = cpt || 4;
+    floor = Math.floor(((promptChars + (outputChars || 0)) / ratio) * 0.8);
+  }
+  if (floor && floor >= 512) facts.contextWindow = floor;
+
+  if (!Object.keys(facts).length) return;
+  const patch = providers.learnModel(settings, provider, model, facts, 'server', { windowSource: 'observed' });
+  if (patch) broadcast('settings:changed', store.setSettings(patch));
+}
+
+/** A provider stated its real maximum while rejecting us. Nothing beats that. */
+function recordContextLimit(provider, model, limit) {
+  if (!provider || !model || !limit) return;
+  const patch = providers.learnModel(
+    store.getSettings(), provider, model, { contextWindow: limit }, 'server', { windowSource: 'error' }
+  );
+  if (patch) broadcast('settings:changed', store.setSettings(patch));
+}
+
+/**
+ * The context actually sent with the next message.
+ *
+ * history.contextTurns() hands back a compaction as a single entry with role
+ * 'summary'; the wording that wraps it lives in src/prompts.js. Assembling both
+ * in one place is what keeps the fill bar honest -- the bar has to measure the
+ * same thing the request will carry, prefill and all, or it reads low by a
+ * couple of hundred tokens exactly when that margin matters.
+ */
+function assembleContext(settings) {
+  if (!convo) return [];
+  const raw = history.contextTurns(convo, (settings.history || {}).contextTurns);
+  const out = [];
+  for (const t of raw) {
+    if (t.role === 'summary') { for (const p of compactPrefill(t.text)) out.push(p); }
+    else out.push(t);
+  }
+  return out;
+}
+
+/**
+ * What the fill bar draws.
+ *
+ * Measured against the USABLE budget, not the raw window: the reply has to fit
+ * in the same space, so those tokens are spent whether or not they have been
+ * written yet. A bar that reads 90% and then fails on the answer would be worse
+ * than no bar at all.
+ */
+function contextSnapshot() {
+  const settings = store.getSettings();
+  const llm = createLLM(settings, settings.smart ? 'smart' : 'fast');
+  if (!llm.ready || !llm.model) return null;
+
+  const budget = providers.contextBudgetFor(settings, llm.provider, llm.model);
+  const cpt = providers.charsPerTokenFor(settings, llm.provider, llm.model);
+  const reply = Math.max(256, ((settings.reply || {}).maxTokens) || 4096);
+  const prior = assembleContext(settings);
+  const used = estimateTurns(prior, cpt);
+  const usable = Math.max(1024, budget.tokens - reply);
+  const folded = convo ? compact.lastSummary(convo.messages || []) : null;
+
+  return {
+    used,
+    usable,
+    reply,
+    window: budget.tokens,
+    pct: Math.min(1, used / usable),
+    guessed: budget.guessed,
+    source: budget.source,
+    calibrated: cpt != null,
+    turns: prior.length,
+    compacted: !!folded,
+    provider: llm.provider,
+    label: llm.label,
+    model: llm.model,
+    tier: llm.tier
+  };
+}
+
+function pushContext() {
+  const snap = contextSnapshot();
+  if (snap) broadcast('context:usage', snap);
+}
+
+// -------------------------------------------------------------- compaction
+/** A compaction that never returns would hold up the answer it exists to enable. */
+const COMPACT_TIMEOUT_MS = 90000;
+
+/**
+ * Fold the older part of this conversation into one structured summary.
+ *
+ * Always the SMART tier, whatever the current turn is routed to. This is the
+ * call that decides what the rest of the conversation will remember, so it is
+ * the one place where paying for the better model is unambiguously right: get it
+ * wrong here and every later answer is built on the mistake, with the originals
+ * still on disk but no longer in view.
+ *
+ * Never throws. A failed compaction leaves the conversation exactly as it was,
+ * which is a worse conversation but a working one.
+ */
+async function runCompaction({ auto } = {}) {
+  if (!convo || !Array.isArray(convo.messages)) {
+    return { ok: false, reason: 'There is nothing to compress yet.' };
+  }
+  if (state.compacting) return { ok: false, reason: 'A compression is already running.' };
+
+  const settings = store.getSettings();
+  const cfg = settings.context || {};
+  const plan = compact.grade(convo.messages, { keepHot: cfg.keepHot });
+  if (!plan.ok) return { ok: false, reason: plan.reason };
+
+  const llm = createLLM(settings, 'smart');
+  if (!llm.ready) {
+    return { ok: false, reason: llm.reason || 'No smart model is configured to compress with.' };
+  }
+
+  const before = contextSnapshot();
+  state.compacting = true;
+  broadcast('compact:state', { active: true, auto: !!auto, turns: plan.folded });
+
+  const ac = new AbortController();
+  compactController = ac;
+  // The signal alone cannot say who pulled it, and a timeout and a deliberate
+  // Stop deserve different words -- one is a fault, the other is the user
+  // getting what they asked for.
+  let timedOut = false;
+  const timer = setTimeout(() => { timedOut = true; ac.abort(); }, COMPACT_TIMEOUT_MS);
+
+  try {
+    const system = COMPACT.system;
+    const prompt = buildCompact(plan);
+    let raw = '';
+    let usage = null;
+
+    await llm.stream({
+      system,
+      turns: [{ role: 'user', text: prompt }],
+      maxTokens: COMPACT.budget(plan.inputTokens),
+      signal: ac.signal,
+      onToken: (t) => { raw += t; },
+      onUsage: (u) => { usage = u; }
+    });
+
+    const doc = parseCompact(raw);
+    if (!doc.ok) {
+      // Structure is the whole contract. Free prose injected under a "this is
+      // your context" banner is indistinguishable from a hallucination, and it
+      // would replace turns that are still perfectly usable.
+      throw new Error('The model answered the conversation instead of compressing it.');
+    }
+    if (doc.missing.length) {
+      log('[compact] missing sections:', doc.missing.join(', '));
+    }
+
+    recordContext({
+      provider: llm.provider,
+      model: llm.model,
+      promptChars: system.length + prompt.length,
+      outputChars: raw.length,
+      usage,
+      hadImage: false
+    });
+
+    history.append(convo, 'summary', doc.text, {
+      kind: 'compaction',
+      covers: plan.covers,
+      folded: plan.folded,
+      model: llm.model,
+      provider: llm.provider
+    });
+    if (history.save(convo)) broadcast('history:changed', { id: convo.id, title: convo.title });
+
+    const after = contextSnapshot();
+    const entry = {
+      turns: plan.folded,
+      // The summary itself, so the panel can drop the marker in place instead of
+      // reloading the session and scrolling the user away from what they read.
+      text: doc.text,
+      ts: Date.now(),
+      before: before ? before.used : null,
+      after: after ? after.used : null,
+      missing: doc.missing,
+      model: llm.model,
+      provider: llm.provider,
+      auto: !!auto
+    };
+    broadcast('compact:done', entry);
+    log('[compact] folded', plan.folded, 'turns',
+      before && after ? before.used + ' -> ' + after.used + ' tok' : '');
+    return { ok: true, ...entry };
+  } catch (e) {
+    const cancelled = !!(e && e.aborted) && !timedOut;
+    const message = cancelled
+      ? 'Compression stopped.'
+      : (e && e.aborted) ? 'The compression timed out.'
+        : (e && e.message) || String(e);
+    log('[compact] failed:', message);
+    if (e && e.contextLimit) recordContextLimit(e.provider, e.model, e.contextLimit);
+    // Nothing was appended, so the conversation is exactly as it was: a
+    // cancelled compaction costs the round trip and nothing else.
+    return { ok: false, cancelled, reason: message };
+  } finally {
+    clearTimeout(timer);
+    compactController = null;
+    state.compacting = false;
+    broadcast('compact:state', { active: false });
+    pushContext();
+  }
+}
+
+/**
+ * Compress before the next request, if the conversation has grown enough.
+ *
+ * Runs INSIDE the feature run rather than on a timer: the only moment the answer
+ * is worth delaying for is the moment before a request that would otherwise be
+ * over-long, and a background timer would fire in the middle of the user reading
+ * a reply and change what the assistant remembers with no visible cause.
+ */
+async function maybeCompact() {
+  const settings = store.getSettings();
+  const snap = contextSnapshot();
+  const verdict = compact.shouldCompact(snap, settings);
+  if (!verdict.yes) {
+    /**
+     * Over the line on a window nobody has declared. Compressing on a guess
+     * would destroy detail to solve a problem that may not exist, so this offers
+     * instead of acting -- once, not on every message.
+     */
+    if (verdict.reason === 'guessed' && snap && snap.pct >= 0.8 && !state.warnedGuessFull) {
+      state.warnedGuessFull = true;
+      notify('This conversation is long, and "' + snap.model + '" has not declared a context window, '
+        + 'so Nimbus is assuming ' + Math.round(snap.window / 1000) + 'k. '
+        + 'Compress it from the model chip, or set the real window in Settings.', 'warn');
+    }
+    return;
+  }
+  notify('Compressing the conversation so it keeps fitting…', 'info');
+  const res = await runCompaction({ auto: true });
+  // A cancel is not a failure. The user pressed Stop and got what they asked
+  // for; telling them it "could not" compress would read as a fault.
+  if (!res.ok && !res.cancelled && res.reason) notify('Could not compress: ' + res.reason, 'warn');
+}
 
 // ---------------------------------------------------------------- mic gate
 /**
@@ -153,6 +586,9 @@ async function transcribeOne(channel, pcm) {
   if (transcript.length > MAX_TRANSCRIPT) transcript.splice(0, transcript.length - MAX_TRANSCRIPT);
   broadcast('transcript', turn);
   log('transcript', channel, text);
+
+  // Heard audio now has somewhere to go. Ignores the 'you' channel; see digest.js.
+  digest.push(turn);
 
   maybeWake(text, channel);
 }
@@ -307,15 +743,24 @@ async function runFeature(mode, userText) {
      */
     const conversational = mode === 'ask' || mode === 'screenshot';
     if (!convo) convo = history.create(userText || def.userBubble || 'Conversation');
-    const prior = conversational
-      ? history.contextTurns(convo, (settings.history || {}).contextTurns)
-      : [];
+    /**
+     * Fold before assembling, not after answering. Compaction changes what
+     * `prior` contains, so it has to happen while there is still a decision to
+     * make about this request -- and doing it here means the user waits once,
+     * visibly, rather than having the assistant quietly forget between turns.
+     */
+    if (conversational) await maybeCompact();
+    const prior = conversational ? assembleContext(settings) : [];
     const turns = prior.concat([{ role: 'user', text: built }]);
 
     history.append(convo, 'user', userBubble || userText || def.userBubble || '(action)', { mode });
 
     const askedAt = Date.now();
     let sawFirstToken = false;
+    let usage = null;
+    // What we know we put on the wire, for calibrating this model's tokenizer.
+    const promptChars = String(def.system || '').length
+      + turns.reduce((n, t) => n + String(t.text || '').length, 0);
 
     const full = await activeLLM.stream({
       system: def.system,
@@ -345,6 +790,7 @@ async function runFeature(mode, userText) {
         }
         broadcast('llm:token', { text: t });
       },
+      onUsage: (u) => { usage = u; },
       onNotice: (n) => {
         notify(n.message, n.level || 'info');
         /**
@@ -371,10 +817,25 @@ async function runFeature(mode, userText) {
         model: activeLLM.model, provider: activeLLM.provider, tier: activeLLM.tier
       });
     }
+    recordContext({
+      provider: activeLLM.provider,
+      model: activeLLM.model,
+      promptChars,
+      outputChars: typeof full === 'string' ? full.length : 0,
+      usage,
+      hadImage: !!imageDataUrl
+    });
     broadcast('llm:done', {});
   } catch (e) {
     if (e && e.aborted) broadcast('llm:done', {});
     else broadcast('llm:error', { message: (e && e.message) || String(e) });
+    /**
+     * A context-length rejection is the only error worth learning from: the
+     * provider just stated its own maximum, which is better evidence than
+     * anything /v1/models reports. Recording it is what turns "this failed
+     * again" into a bar that fills up and a compression that happens first.
+     */
+    if (e && e.contextLimit) recordContextLimit(e.provider, e.model, e.contextLimit);
   } finally {
     /**
      * Persisted in `finally`, not on the success path.
@@ -387,6 +848,9 @@ async function runFeature(mode, userText) {
     if (convo && convo.messages.length && history.save(convo)) {
       broadcast('history:changed', { id: convo.id, title: convo.title });
     }
+    // Also on the failure path: the question was still appended, so the bar
+    // would otherwise sit at a stale figure until the next successful turn.
+    pushContext();
     state.busy = false;
     abortController = null;
   }
@@ -401,13 +865,18 @@ function registerIPC() {
     // fixed the thing that was failing.
     state.sttFailures = 0;
     state.sttMuted = false;
-    // Same reasoning for discovery: a cached model list from before the edit
-    // would report the old endpoint's answer for the new one.
+    // Same reasoning for the digest's own failure count, and for discovery: a
+    // cached model list from before the edit would report the old endpoint's
+    // answer for the new one.
+    digest.reset();
     providers.clearDiscoveryCache();
     // The mic mode and the talk chord both live in settings, so every save is a
     // chance that the gate's inputs just changed underneath it.
     syncPushToTalk();
     broadcast('settings:changed', next);
+    // The route, the reply budget and a manual window override all live in
+    // settings, so any save can change what the bar should read.
+    pushContext();
     return next;
   });
 
@@ -548,14 +1017,27 @@ function registerIPC() {
   ipcMain.handle('history:rename', (_e, id, title) => history.rename(id, title));
   ipcMain.handle('history:load', (_e, id) => {
     const s = history.load(id);
-    if (s) { convo = s; broadcast('history:opened', s); }
+    if (s) { convo = s; state.warnedGuessFull = false; broadcast('history:opened', s); pushContext(); }
     return s;
   });
   ipcMain.handle('history:new', () => {
     convo = null;     // created lazily on the next message, so empty sessions never persist
+    state.warnedGuessFull = false;
     broadcast('history:opened', { id: null, title: 'New conversation', messages: [] });
+    pushContext();
     return true;
   });
+
+  // Pull, for a panel that has just opened and missed every broadcast so far.
+  ipcMain.handle('context:get', () => contextSnapshot());
+  /**
+   * Compress on demand.
+   *
+   * Deliberately allowed below the automatic threshold: the user may know the
+   * next question opens a long thread, and waiting for the bar to fill would
+   * mean paying the delay in the middle of that thread instead of before it.
+   */
+  ipcMain.handle('context:compact', () => runCompaction({ auto: false }));
   ipcMain.handle('history:delete', (_e, id) => {
     history.remove(id);
     if (convo && convo.id === id) convo = null;
@@ -622,7 +1104,12 @@ function registerIPC() {
   }));
 
   ipcMain.on('ask', (_e, payload) => runFeature(payload && payload.mode, payload && payload.text));
-  ipcMain.on('ask:abort', () => { if (abortController) abortController.abort(); });
+  ipcMain.on('ask:abort', () => {
+    // Both, because the user pressed Stop while waiting -- and when a compaction
+    // is running ahead of a request, the compaction IS what they are waiting on.
+    if (compactController) compactController.abort();
+    if (abortController) abortController.abort();
+  });
 
   ipcMain.on('audio:utterance', (_e, meta, buffer) => {
     if (!state.listening || !buffer) return;
@@ -659,6 +1146,9 @@ function registerIPC() {
       state.keyHeld = false;
       state.buttonHeld = false;
     }
+    // Turning listening off flushes whatever was heard last, which is usually
+    // the part of a meeting worth having written up.
+    digest.setListening(state.listening);
     syncPushToTalk();
   });
 
@@ -809,6 +1299,7 @@ app.whenReady().then(() => {
 app.on('will-quit', () => {
   if (warmth) warmth.stop();
   if (ptt) ptt.stop();
+  digest.stop();
   globalShortcut.unregisterAll();
   store.flush();          // debounced writes must not be lost on exit
   db.close();             // checkpoints the WAL, so the next launch opens clean

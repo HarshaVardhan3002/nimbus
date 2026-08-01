@@ -43,13 +43,29 @@
       </div>
 
       <div id="composer">
+        <!-- Context fill. A 2px rail on the composer's own top edge: always in
+             view while typing, and invisible until there is something to say. -->
+        <div id="ctx-rail" class="hidden" aria-hidden="true"><i></i></div>
         <div id="input-area">
           <div id="placeholder">Ask about your screen or what you're hearing</div>
           <textarea id="input" rows="1" spellcheck="false" aria-label="Message"></textarea>
         </div>
         <div id="composer-bottom">
           <button id="smart" class="chip" title="Use the smart model"><span class="ic"></span><span>Smart</span></button>
-          <button id="model-chip" class="chip subtle" title="Active model"><span id="model-name">-</span></button>
+          <button id="model-chip" class="chip subtle" title="Active model" aria-expanded="false"><span id="model-name">-</span></button>
+          <!-- The numbers behind the rail. Opened from the model chip, because
+               that is where "which model, and how much room is left" belongs. -->
+          <div id="ctx-pop" class="hidden" role="dialog" aria-label="Context usage">
+            <div class="ctx-pop-head">
+              <span id="ctx-pct">—</span>
+              <span id="ctx-model" class="ctx-dim"></span>
+            </div>
+            <div class="ctx-bar"><i id="ctx-bar-fill"></i></div>
+            <div id="ctx-lines" class="ctx-dim"></div>
+            <!-- Compressing early is a legitimate choice, so this is never
+                 hidden -- only disabled, with the reason in the title. -->
+            <button id="ctx-compact" class="ctx-act">Compress now</button>
+          </div>
           <div class="spacer"></div>
           <button id="send" class="send" title="Send (Enter)"></button>
         </div>
@@ -117,6 +133,12 @@
               <option value="no">Text only</option>
             </select>
           </div>
+          <!-- Blank means "work it out". Worth typing only when a server
+               declares nothing and the assumed figure is visibly wrong. -->
+          <div class="s-row" data-adv id="row-fast-window">
+            <span>Context window</span>
+            <input id="f-fast-window" type="text" spellcheck="false" inputmode="numeric" />
+          </div>
 
           <div class="route-row">
             <span class="route-tier smart">Smart</span>
@@ -132,6 +154,10 @@
               <option value="yes">This model can see images</option>
               <option value="no">Text only</option>
             </select>
+          </div>
+          <div class="s-row" data-adv id="row-smart-window">
+            <span>Context window</span>
+            <input id="f-smart-window" type="text" spellcheck="false" inputmode="numeric" />
           </div>
 
           <!--
@@ -251,6 +277,37 @@
             <span>Translate into</span>
             <input id="f-target-lang" type="text" spellcheck="false" placeholder="English" />
           </div>
+        </div>
+
+        <!--
+          What Nimbus does with heard audio unprompted.
+
+          This is the setting that answers "it is listening, so what?". Before
+          it, system audio was transcribed and displayed and then consumed by
+          nothing unless a button was pressed. It is also the only setting in
+          the app that spends money on a timer, which is why the interval is
+          stated in plain text rather than buried.
+        -->
+        <div class="s-group" data-tab="voice">
+          <div class="s-label">While listening <span class="s-hint">what to do with what you hear</span></div>
+          <div class="s-row">
+            <span>System audio</span>
+            <select id="f-digest">
+              <option value="off">Transcribe only</option>
+              <option value="summarize">Summarize as it plays</option>
+              <option value="translate">Translate as it plays</option>
+              <option value="both">Translate and summarize</option>
+            </select>
+          </div>
+          <div id="digest-hint" class="s-hint"></div>
+          <div class="s-row" data-adv>
+            <span>Update every</span>
+            <input id="f-digest-ceiling" type="range" min="60" max="600" step="30" />
+            <span id="digest-ceiling-val" class="s-hint"></span>
+          </div>
+          <div class="s-hint" data-adv>A summary is written whenever the audio pauses for more than five
+            seconds, or once it has built up enough to be worth one — this is the longest it will go
+            without writing anything during unbroken audio.</div>
         </div>
 
         <div class="s-group" data-tab="voice">

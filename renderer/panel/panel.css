@@ -143,6 +143,70 @@ body { width: 100%; }
   user-select: text;
 }
 
+/**
+ * Audio digest.
+ *
+ * Marginalia, not a turn. A two-hour meeting produces dozens of these, and if
+ * they carried the weight of an assistant bubble the user's own conversation
+ * would be lost inside a wall of machine output. So: no bubble, no fill, one
+ * hairline rule, and collapsed to a single glanceable line until asked.
+ *
+ * The <summary> is a grid rather than a flex row so the timestamp stays pinned
+ * right and the gist truncates instead of pushing it off the edge.
+ */
+.digest {
+  position: relative;
+  margin: 2px 0;
+  padding: 5px 0 5px 9px;
+  border-left: 2px solid var(--stroke-hair);
+  animation: riseIn 220ms var(--ease-decel) both;
+}
+.digest > summary {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 7px;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+.digest > summary::-webkit-details-marker { display: none; }
+.digest-tag { display: inline-flex; color: var(--tx-mut); }
+.digest-gist {
+  color: var(--tx-dim);
+  font-size: calc(12.5px * var(--text-zoom));
+  line-height: 1.45;
+  /* One line collapsed. Expanding is the affordance for the rest. */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.digest-meta {
+  color: var(--tx-mut);
+  font-size: calc(11px * var(--text-zoom));
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.digest:hover .digest-gist,
+.digest[open] .digest-gist { color: var(--tx-2); }
+.digest[open] .digest-gist { white-space: normal; overflow: visible; }
+.digest[open] .digest-tag { color: var(--tx-2); }
+.digest-body {
+  margin-top: 6px;
+  color: var(--tx-dim);
+  font-size: calc(12.5px * var(--text-zoom));
+  line-height: 1.5;
+  -webkit-user-select: text;
+  user-select: text;
+}
+.digest-body p { margin: 0 0 6px; }
+.digest-body p:last-child { margin-bottom: 0; }
+.digest-body ul, .digest-body ol { margin: 4px 0; padding-left: 18px; }
+.digest-body li { margin: 2px 0; }
+.digest-body strong { color: var(--tx-1); font-weight: 600; }
+.digest .copy-btn { right: -2px; }
+.digest:hover .copy-btn { opacity: 1; pointer-events: auto; }
+
 /* Tokens fade in as they stream rather than appearing as a hard block. */
 .tok { animation: tokIn 200ms var(--ease-decel) both; }
 @keyframes tokIn { from { opacity: 0; } to { opacity: 1; } }
@@ -201,6 +265,7 @@ body { width: 100%; }
 
 /* ============================== composer ============================== */
 #composer {
+  position: relative;
   margin-top: 11px;
   padding: 10px 12px;
   border-radius: var(--r-card);
@@ -240,8 +305,91 @@ body { width: 100%; }
   user-select: text;
 }
 
-#composer-bottom { display: flex; align-items: center; gap: 6px; }
+#composer-bottom { position: relative; display: flex; align-items: center; gap: 6px; }
 .spacer { flex: 1; }
+
+/* ---------------------------- context fill ---------------------------- */
+/**
+ * Deliberately 2px and unlabelled.
+ *
+ * The alternative -- a percentage sitting permanently next to the input -- turns
+ * every message into an accounting exercise. A rail reads as texture until it is
+ * long enough to notice, and the numbers live one click away in the popover.
+ */
+#ctx-rail {
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 2px;
+  border-radius: var(--r-card) var(--r-card) 0 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+#ctx-rail.hidden { display: none; }
+#ctx-rail > i {
+  display: block;
+  height: 100%;
+  width: 0;
+  background: var(--tx-dim);
+  transition: width var(--t-med) var(--ease-std), background-color var(--t-fast) var(--ease-std);
+}
+#ctx-rail[data-level="warm"] > i { background: var(--accent); }
+#ctx-rail[data-level="high"] > i { background: var(--warn); }
+#ctx-rail[data-level="hot"]  > i { background: var(--danger); }
+/* A window nobody has confirmed is drawn as a dashed fill, so a bar that is
+   nearly full on a guessed 32k never looks like a measured fact. */
+/* Masked rather than striped with a colour: the gaps then show whatever is
+   behind the composer, so this reads the same in both themes. */
+#ctx-rail.guessed > i {
+  -webkit-mask-image: repeating-linear-gradient(90deg, #000 0 3px, transparent 3px 6px);
+  mask-image: repeating-linear-gradient(90deg, #000 0 3px, transparent 3px 6px);
+}
+
+#ctx-pop {
+  position: absolute;
+  bottom: calc(100% + 9px);
+  left: 0;
+  z-index: 6;
+  width: 244px;
+  padding: 10px 11px;
+  border-radius: var(--r-card);
+  background: var(--surface-2);
+  border: 1px solid var(--stroke-rim);
+  box-shadow: var(--shadow);
+  font-size: 11.5px;
+  line-height: 1.45;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+#ctx-pop.hidden { display: none; }
+.ctx-pop-head { display: flex; align-items: baseline; gap: 7px; }
+#ctx-pct { font-size: 13px; font-weight: 600; color: var(--tx-1); }
+.ctx-dim { color: var(--tx-mut); }
+#ctx-model { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ctx-bar { height: 4px; border-radius: 2px; background: var(--fill-2); overflow: hidden; }
+.ctx-bar > i { display: block; height: 100%; width: 0; background: var(--accent); }
+#ctx-lines { display: flex; flex-direction: column; gap: 2px; }
+.ctx-act {
+  margin-top: 1px;
+  padding: 5px 0;
+  border-radius: var(--r-ctl);
+  border: 1px solid var(--stroke-hair);
+  background: var(--fill-1);
+  color: var(--tx-1);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  transition: background var(--t-fast) var(--ease-std);
+}
+.ctx-act:hover:not(:disabled) { background: var(--fill-2); }
+.ctx-act:disabled { opacity: 0.45; cursor: default; }
+
+/* A compaction marker in the transcript. Reuses .digest wholesale so a folded
+   conversation reads as one more quiet aside rather than an error -- the only
+   differences are an accent edge, because this one changed what the model can
+   see, and pre-wrap, because the summary is sectioned text and not markdown. */
+.digest.fold { border-left-color: var(--accent-soft); }
+.fold-body { white-space: pre-wrap; }
 
 .chip {
   display: inline-flex;
