@@ -1620,8 +1620,10 @@ function registerIPC() {
 // ---------------------------------------------------------------- shortcuts
 function registerShortcuts() {
   const s = store.getSettings().shortcuts || {};
+  const claimed = [];
   const bind = (accel, fn) => {
     if (!accel) return;
+    claimed.push(accel);
     try {
       if (!globalShortcut.register(accel, fn)) {
         console.warn('[nimbus] shortcut already taken by another app:', accel);
@@ -1649,6 +1651,18 @@ function registerShortcuts() {
   // the accelerator store.js v3 deliberately migrated AWAY from because it is
   // commonly already taken -- so the fallback reintroduced the exact bug.
   bind(s.quit || 'Control+Alt+Shift+Q', () => { store.flush(); app.quit(); });
+
+  /**
+   * The panel's keyboard tap has to let these through.
+   *
+   * While the composer is being typed into, keystrokes are swallowed before any
+   * window sees them -- and low-level hooks run BEFORE the system's hotkey
+   * dispatch, so a swallowed accelerator never reaches globalShortcut at all.
+   * Without this the summon shortcut would stop working for exactly as long as
+   * the panel was open. `talk` is included even though it is not bound here,
+   * because src/pushtotalk.js is listening for it.
+   */
+  if (wm) wm.setReservedChords(claimed.concat(s.talk ? [s.talk] : []));
 }
 
 // ---------------------------------------------------------------- lifecycle

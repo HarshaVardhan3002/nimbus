@@ -26,6 +26,8 @@
 const { BrowserWindow, screen } = require('electron');
 const path = require('path');
 const win32 = require('../native/win32');
+const keytap = require('../native/keytap');
+const { parseAccel } = require('../pushtotalk');
 const { Spring, SpringLoop } = require('../spring');
 
 const RENDERER = path.join(__dirname, '..', '..', 'renderer');
@@ -71,6 +73,35 @@ const MENU_INSET = 2;
 const TINT_PILL = { r: 16, g: 18, b: 24, a: 0x96 };
 const TINT_PANEL = { r: 16, g: 18, b: 24, a: 0x8A };
 
+/**
+ * Ctrl chords that are editing COMMANDS rather than text.
+ *
+ * These cannot be forwarded as keystrokes. sendInputEvent delivers a key press
+ * and nothing else, so a forwarded Ctrl+V arrives in the composer as a DOM
+ * event with no clipboard behind it and pastes nothing at all. The WebContents
+ * has real implementations; they are called directly.
+ */
+const CTRL_EDIT = {
+  0x41: 'selectAll', 0x43: 'copy', 0x56: 'paste',
+  0x58: 'cut', 0x5a: 'undo', 0x59: 'redo'
+};
+
+const VK_ESCAPE = 0x1b;
+const VK_CAPITAL = 0x14;
+const VK_Z = 0x5a;
+// Modifier virtual keys, in the order parseAccel reports them.
+const VK_SHIFT = 0x10, VK_CONTROL = 0x11, VK_MENU = 0x12, VK_LWIN = 0x5b;
+
+/**
+ * How often the foreground is re-checked while the tap is up.
+ *
+ * Only covers window switches that no click reports -- Alt+Tab, an app raising
+ * itself. Clicks arrive by hook, so this does not have to be quick enough to
+ * beat a keystroke, and 60ms is already faster than a person can switch windows
+ * and start typing.
+ */
+const INPUT_POLL_MS = 60;
+
 class WindowManager {
   constructor({ onEvent, stealth = false } = {}) {
     this.pill = null;
@@ -100,12 +131,20 @@ class WindowManager {
     /**
      * True only while the user is deliberately typing into the panel.
      *
-     * Outside of it both windows carry WS_EX_NOACTIVATE, so clicking anything
-     * in Nimbus leaves the foreground window -- and the caret in it -- alone.
-     * `prevForeground` is the window that had it, so it can be handed back.
+     * Both windows carry WS_EX_NOACTIVATE at all times, and in input mode the
+     * panel STILL does: keystrokes are tapped out of the input stream and
+     * forwarded, so the foreground window never changes and the caret in it
+     * never blinks out. `prevForeground` is the window the user is working in,
+     * kept so a change of it can be noticed. `borrowedForeground` is true only
+     * on the fallback path, where there was no tap to install and the panel had
+     * to activate the old way.
      */
     this.inputMode = false;
     this.prevForeground = null;
+    this.borrowedForeground = false;
+    this.inputTimer = null;
+    /** Parsed global shortcuts the tap must not swallow. See _routeKey(). */
+    this.reserved = [];
     this.pillSize = { w: PILL.w, h: PILL.h };
     this.panelSize = { w: PANEL.w, h: PANEL.h };
 
@@ -180,9 +219,11 @@ class WindowManager {
     /**
      * The user clicked away by themselves.
      *
-     * Input mode ends, but the foreground is NOT restored: they have already
-     * chosen where they want to be, and putting them back in the window we
-     * recorded earlier would be a second focus change they did not ask for.
+     * Only ever fires on the fallback path, where the panel really was
+     * activated -- with the keyboard tap the panel is never focused, so it can
+     * never be blurred, and _watchInput() is what notices instead. The
+     * foreground is NOT restored either way: they have already chosen where
+     * they want to be.
      */
     this.panel.on('blur', () => { if (this.inputMode) this.releaseFocus({ restore: false }); });
 
@@ -301,53 +342,280 @@ class WindowManager {
 
   // ------------------------------------------------------------- focus
   /**
-   * Hand the keyboard to the panel, remembering who had it.
+   * Accelerators the keyboard tap must let past. See _routeKey().
    *
-   * Called only for a deliberate act -- clicking into the composer, a search
-   * box or a settings field, or pressing the summon shortcut. Everything else
-   * (buttons, scrolling, dragging the pill, reading an answer) happens with the
-   * foreground window untouched, so the user's editor keeps its caret, its
-   * selection and any completion popup it had open.
+   * Given as Electron accelerator strings, parsed once here, because main owns
+   * the settings and this class owns the tap.
+   */
+  setReservedChords(accels) {
+    this.reserved = (accels || [])
+      .map((a) => { try { return parseAccel(a); } catch { return null; } })
+      .filter(Boolean);
+    return this.reserved.length;
+  }
+
+  /**
+   * Type into the panel without taking the keyboard away from anyone.
+   *
+   * The panel is NOT activated and the foreground window does not change. A
+   * low-level tap takes the keystrokes out of the input stream and forwards
+   * them here instead, so the window the user is working in never receives
+   * WM_KILLFOCUS: its caret keeps blinking on the line they were editing, its
+   * selection stays drawn, and any completion popup stays open. That caret is
+   * also what makes "read this document down to where my cursor is" a question
+   * with an answer, since it is still on screen to be seen.
+   *
+   * Chromium's own focus is taken (focusOnWebView), which is a different thing
+   * from the OS foreground and does not touch it -- verified: with it applied,
+   * document.hasFocus() is true in the panel while GetGUIThreadInfo still
+   * reports a live caret owned by the editor's thread. That is what lets the
+   * panel paint its own caret and run its focus styles, so both carets are
+   * visible at once, which is exactly the point.
    */
   takeFocus() {
     if (!this.panel || this.panel.isDestroyed()) return false;
     if (!this.panelOpen) this.openPanel();
-    // Recorded before we activate, and only on the way IN: re-entering while
-    // already focused would record our own panel as the window to go back to.
-    if (!this.inputMode) this.prevForeground = win32.foregroundWindow();
+    if (this.inputMode) {
+      // Already typing; a second claim (another field) just refreshes the
+      // renderer, which is the side that knows which element wanted it.
+      this.onEvent('focus:mode', { typing: true });
+      return true;
+    }
+
+    this.prevForeground = win32.foregroundWindow();
     this.inputMode = true;
-    win32.setNoActivate(this.panel, false);
-    try { this.panel.setFocusable(true); } catch { /* option-only on some builds */ }
-    this.panel.focus();
-    win32.forceForeground(this.panel);
+    this.borrowedForeground = false;
+
+    if (!keytap.start((ev) => this._routeKey(ev))) {
+      /**
+       * No tap: no koffi, or a policy that forbids hooks, or a more privileged
+       * window in the foreground. Fall back to activating the panel the old
+       * way. It costs the user their caret, which is the whole complaint --
+       * but a composer that cannot be typed into at all is worse.
+       */
+      this.borrowedForeground = true;
+      win32.setNoActivate(this.panel, false);
+      try { this.panel.setFocusable(true); } catch { /* option-only on some builds */ }
+      this.panel.focus();
+      win32.forceForeground(this.panel);
+    }
+
+    keytap.startMouse((pt) => this._onClick(pt));
+    try { this.panel.focusOnWebView(); } catch { /* older Electron: no caret, still types */ }
+    this._watchInput();
     this.onEvent('focus:mode', { typing: true });
     return true;
   }
 
   /**
-   * Stop taking the keyboard and give the foreground back.
+   * Stop taking keystrokes.
    *
-   * `restore` is false when the user has already moved on by themselves -- they
-   * clicked another window, and forcing focus to whatever we recorded earlier
-   * would be a second unwanted focus change on top of the one they asked for.
+   * On the tap path there is nothing to give back -- the foreground never moved
+   * -- so `restore` only means anything on the fallback path, where it is false
+   * when the user has already chosen another window themselves and forcing them
+   * back would be a second focus change they did not ask for.
    */
   releaseFocus({ restore = true } = {}) {
     if (!this.inputMode) return false;
     this.inputMode = false;
+    this._unwatchInput();
+    keytap.stop();
+    keytap.stopMouse();
+
     const back = this.prevForeground;
+    const borrowed = this.borrowedForeground;
     this.prevForeground = null;
+    this.borrowedForeground = false;
 
     if (this.panel && !this.panel.isDestroyed()) {
-      try { this.panel.setFocusable(false); } catch { /* see takeFocus */ }
-      win32.setNoActivate(this.panel, true);
-      // Whoever we recorded may be gone, or may refuse the foreground. Letting
-      // go on our side is what matters; without it the panel keeps the keyboard
-      // with no caret visible anywhere.
-      if (restore && !win32.restoreForeground(back)) {
-        try { this.panel.blur(); } catch { /* nothing else to try */ }
+      // Drops Chromium's focus, so the panel stops painting a caret of its own.
+      try { this.panel.blurWebView(); } catch { /* see takeFocus */ }
+      if (borrowed) {
+        try { this.panel.setFocusable(false); } catch { /* see takeFocus */ }
+        win32.setNoActivate(this.panel, true);
+        // Whoever we recorded may be gone, or may refuse the foreground.
+        if (restore && !win32.restoreForeground(back)) {
+          try { this.panel.blur(); } catch { /* nothing else to try */ }
+        }
       }
     }
     this.onEvent('focus:mode', { typing: false });
+    return true;
+  }
+
+  /**
+   * Notice the user going back to their work.
+   *
+   * With nothing ever activated there is no blur event to hear this on: as far
+   * as Windows is concerned the panel was never focused, so nothing is ever
+   * taken away from it, and a tap left up would swallow keystrokes the user is
+   * typing into another app.
+   *
+   * The common case is not a foreground change at all, and _onClick() is what
+   * catches it: the user is in their editor, types a question into the panel,
+   * clicks back into that same editor and carries on. Nimbus never took the
+   * foreground, so the foreground never changed, and nothing here would look
+   * like it had happened while every keystroke went into the void. Measured,
+   * not theorised: three characters swallowed with the editor sitting in the
+   * foreground the whole time.
+   *
+   * This poll covers what a click cannot express -- another app raising itself,
+   * or a shortcut switching windows.
+   */
+  _watchInput() {
+    if (this.inputTimer || this.borrowedForeground) return;
+    this.inputTimer = setInterval(() => {
+      if (!this.inputMode) return this._unwatchInput();
+      const fg = win32.foregroundWindow();
+      // null is one of our own windows, which only happens on the fallback
+      // path. Anything else that is not where we started means they moved on.
+      if (fg !== null && this.prevForeground !== null && fg !== this.prevForeground) {
+        this.releaseFocus({ restore: false });
+      }
+    }, INPUT_POLL_MS);
+    if (this.inputTimer.unref) this.inputTimer.unref();
+  }
+
+  _unwatchInput() {
+    if (this.inputTimer) { clearInterval(this.inputTimer); this.inputTimer = null; }
+  }
+
+  /**
+   * A mouse button went down somewhere on the screen.
+   *
+   * Runs inside the hook procedure, so it does the least it can: a bounds test,
+   * then hand the actual work to the next tick. Releasing focus from in here
+   * would put window management, IPC and a Win32 round trip in the path of the
+   * user's click, and a hook that overruns LowLevelHooksTimeout is removed by
+   * Windows without telling anyone.
+   */
+  _onClick(pt) {
+    if (!this.inputMode || this._pointOverNimbus(pt)) return;
+    setImmediate(() => this.releaseFocus({ restore: false }));
+  }
+
+  /**
+   * Is the pointer over one of our windows?
+   *
+   * Bounds, not shape. A click in the gap between the pill and its open menu is
+   * outside the region and really goes to the app underneath, but counts as
+   * inside here and leaves the tap up. Deliberate: the failure of guessing
+   * wrong in this direction is one stray keystroke, and the failure of guessing
+   * wrong in the other is the composer going dead under the user's hands.
+   */
+  _pointOverNimbus(pt) {
+    let c;
+    try {
+      /**
+       * The hook reports physical pixels and getBounds is in DIPs, which are the
+       * same number only at 100% scaling. Getting this wrong would land every
+       * click on a scaled display in the wrong place -- near the top left of the
+       * screen it would even keep landing inside the panel, so the tap would
+       * never let go.
+       */
+      c = screen.screenToDipPoint ? screen.screenToDipPoint(pt) : screen.getCursorScreenPoint();
+    } catch { return true; }
+    for (const w of [this.pill, this.panel]) {
+      if (!w || w.isDestroyed() || !w.isVisible()) continue;
+      const b = w.getBounds();
+      if (c.x >= b.x && c.x < b.x + b.width && c.y >= b.y && c.y < b.y + b.height) return true;
+    }
+    return false;
+  }
+
+  /** Does this key press match one of the app's own global shortcuts? */
+  _isReserved(ev) {
+    for (const c of this.reserved) {
+      if (c.key !== ev.vk) continue;
+      const want = new Set(c.mods);
+      if (want.has(VK_CONTROL) !== ev.mods.ctrl) continue;
+      if (want.has(VK_SHIFT) !== ev.mods.shift) continue;
+      if (want.has(VK_MENU) !== ev.mods.alt) continue;
+      if (want.has(VK_LWIN) !== ev.mods.meta) continue;
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * What a tapped key means. Returns true to swallow it.
+   *
+   * Runs inside the hook procedure, so it stays short: everything it does is a
+   * table lookup or a post to the renderer.
+   */
+  _routeKey(ev) {
+    if (!this.inputMode || !this.panel || this.panel.isDestroyed()) return false;
+    const m = ev.mods;
+
+    /**
+     * The user leaving. A Windows-key or Alt chord is them going somewhere
+     * else, and Alt+Tab in particular must never be eaten by an overlay. The
+     * release is deferred: this is the middle of the input path and tearing the
+     * hook down from inside its own callback is not a thing to do.
+     */
+    if (m.meta || (m.alt && !m.ctrl)) {
+      setImmediate(() => this.releaseFocus({ restore: false }));
+      return false;
+    }
+
+    /**
+     * The app's own shortcuts. globalShortcut is RegisterHotKey underneath, and
+     * the system processes hotkeys AFTER low-level hooks -- so swallowing one
+     * here would silently disable the summon shortcut for exactly as long as
+     * the composer was open, which is when it is most likely to be pressed.
+     */
+    if (this._isReserved(ev)) return false;
+
+    /**
+     * Modifiers are always passed through. Two reasons, and the first is not
+     * obvious: swallowing a modifier stops the rest of the system seeing it
+     * held, and this very function reads the modifier state back out of
+     * GetAsyncKeyState to decide what a key types -- so eating Shift would make
+     * the panel type lowercase. They also insert nothing, so passing them on
+     * costs the app underneath nothing. Caps Lock additionally has to reach the
+     * OS or its toggle and keytap's copy of it drift apart.
+     */
+    if (ev.modifier || ev.vk === VK_CAPITAL) return false;
+
+    if (ev.type === 'up') return true;   // we took the press, we take the release
+
+    if (ev.vk === VK_ESCAPE) {
+      setImmediate(() => this.releaseFocus());
+      return true;
+    }
+
+    const wc = this.panel.webContents;
+    if (m.ctrl && !m.alt) {
+      const cmd = (ev.vk === VK_Z && m.shift) ? 'redo' : CTRL_EDIT[ev.vk];
+      if (cmd) {
+        try { wc[cmd](); } catch { /* the panel went away mid-keystroke */ }
+        return true;
+      }
+    }
+
+    const modifiers = [];
+    if (m.ctrl) modifiers.push('control');
+    if (m.shift) modifiers.push('shift');
+    if (m.alt) modifiers.push('alt');
+
+    // Named keys (Enter, arrows, Backspace) go by name; everything else goes as
+    // the character this key produces on the user's own layout.
+    const key = ev.name || ev.text;
+    if (!key) return true;   // a dead key, or one this layout types nothing for
+
+    try {
+      wc.sendInputEvent({ type: 'keyDown', keyCode: key, modifiers });
+      /**
+       * The char event is what actually inserts text -- keyDown on its own
+       * fires the DOM event and leaves the field empty. Not sent for named keys
+       * or command chords, which insert nothing and would put a control
+       * character in the field if they were.
+       */
+      if (ev.text && !ev.name && !m.ctrl) {
+        wc.sendInputEvent({ type: 'char', keyCode: ev.text, modifiers });
+      }
+      wc.sendInputEvent({ type: 'keyUp', keyCode: key, modifiers });
+    } catch { /* the panel went away mid-keystroke */ }
     return true;
   }
 
@@ -889,6 +1157,11 @@ class WindowManager {
 
   destroy() {
     this.loop.stop();
+    // A hook that outlives the window it forwards to would swallow keystrokes
+    // and deliver them nowhere, which is the one failure this must never have.
+    this._unwatchInput();
+    keytap.stop();
+    keytap.stopMouse();
     if (this.dragTimer) clearInterval(this.dragTimer);
     for (const w of [this.pill, this.panel]) {
       if (w && !w.isDestroyed()) w.destroy();
