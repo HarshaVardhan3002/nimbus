@@ -117,7 +117,7 @@ npm run dev
 
 Open the panel with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Space</kbd>, then open **Settings**. Nimbus should find Ollama automatically. Use **Refresh models** if you want the app to query the server's `/v1/models` endpoint and populate the model pickers.
 
-If your Ollama server lives on another machine, update the Ollama base URL in Settings (for example, `http://192.168.1.50:11434/v1`).
+If your Ollama server lives on another machine, update the Ollama base URL in Settings (for example, `http://<that-machine>:11434/v1`).
 
 ## Configure a model
 
@@ -153,6 +153,13 @@ Nothing is bundled. The installer checks the machine — RAM, graphics vendor, v
 | Older machines, or under 8 GB of RAM | CPU | OpenBLAS |
 
 Models follow the same rule: `large-v3-turbo` on a discrete card, its q5 quantisation on integrated graphics and on CPU, and progressively smaller weights on machines with little memory. Everything is cached under the app's data directory, so this is a first-run cost only.
+
+**Which weights.** By default Nimbus downloads [CrisperWhisper](https://github.com/nyrahealth/CrisperWhisper) rather than stock Whisper. It is a Whisper fine-tune trained to transcribe *verbatim*: it keeps the filler words, false starts and repetitions that Whisper quietly tidies away, and its word timestamps land on the word instead of near it — which is what a meeting, an interview or a lecture actually needs. Two things come with it, and both are shown in the settings pane:
+
+- It covers **English and German only**. Any other transcription language falls back to stock Whisper automatically.
+- Its weights are licensed for **non-commercial research use** ([licence](https://huggingface.co/nyralabs/CrisperWhisper2.0_large/blob/main/LICENSE.md)). Pick **Whisper** under Settings › Voice › Weights for the MIT-licensed originals.
+
+CrisperWhisper is published at full precision only, so where the machine was sized for a quantised model Nimbus quantises it locally after downloading — one 1.6 GB download, then a 574 MB file, the same size the stock model would have been. Every CrisperWhisper file is pinned by SHA-256, because the ggml conversion comes from a community repository rather than from nyra health.
 
 Settings › Voice › **Local engine** shows what was detected and what is actually running — including whether the GPU backend genuinely bound to a device, which is not the same question as which build was installed. Any build and any model can be selected by hand; the automatic choice is a starting point, not a lock.
 

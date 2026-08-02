@@ -172,6 +172,8 @@ function createEngine({ userDataDir, log = () => {} } = {}) {
     build: null,                 // build actually installed, which may be a fallback
     wanted: null,                // build asked for
     model: null,
+    family: null,                // weights actually loaded: whisper | crisper
+    wantedFamily: null,
     port: 0,
     endpoint: '',
     message: '',
@@ -313,25 +315,98 @@ function createEngine({ userDataDir, log = () => {} } = {}) {
     throw new Error('no usable build. ' + errors.join('; '));
   }
 
-  async function ensureModel(tier, language, onProgress) {
-    const model = resolveModel(tier, language);
-    const dest = path.join(modelRoot, model.file);
-    if (await exists(dest)) return { file: dest, id: model.id, cached: true };
+  /**
+   * Shrink an f16 model in place with the quantizer that ships in every build.
+   *
+   * CrisperWhisper is only published at full precision, and a 1.6 GB model on a
+   * machine that was sized for a 600 MB one is the difference between a warm
+   * model and one that pages. Quantising costs a minute once; the f16 is dropped
+   * afterwards so the disk cost is the small file, not both.
+   */
+  function quantize(exeDir, src, dest, type) {
+    const bin = path.join(exeDir, process.platform === 'win32' ? 'whisper-quantize.exe' : 'whisper-quantize');
+    return new Promise((resolve, reject) => {
+      if (!fs.existsSync(bin)) return reject(new Error('no quantizer in this build'));
+      execFile(bin, [src, dest, type], { windowsHide: true, timeout: 1200000 },
+        (err, _out, stderr) => {
+          if (err) reject(new Error('quantize failed: ' + ((stderr || '').trim().split('\n').pop() || err.message)));
+          else resolve(dest);
+        });
+    });
+  }
+
+  /** Hash a file we did not build, because the catalog says what it should be. */
+  function sha256(file) {
+    return new Promise((resolve, reject) => {
+      const h = require('crypto').createHash('sha256');
+      const rs = fs.createReadStream(file);
+      rs.on('data', (b) => h.update(b));
+      rs.on('error', reject);
+      rs.on('end', () => resolve(h.digest('hex')));
+    });
+  }
+
+  /**
+   * Get the weights on disk, in the family that was asked for where possible.
+   *
+   * The stock Whisper weights are the floor: if the preferred family cannot be
+   * downloaded, verified or quantised, the tier is served by Whisper rather than
+   * left with nothing. Every failure is reported, since silently transcribing
+   * with a different model than the settings pane claims is worse than slow.
+   */
+  async function ensureModel(tier, language, family, exeDir, onProgress) {
+    const attempts = [];
+    const first = resolveModel(tier, language, family);
+    attempts.push(first);
+    if (first.family !== 'whisper') attempts.push(resolveModel(tier, language, 'whisper'));
 
     const errors = [];
-    for (const url of model.urls) {
-      try {
-        emit({
-          phase: 'downloading',
-          message: 'Downloading the ' + model.label + ' model (' + model.approxMB + ' MB)...'
-        });
-        await download(url, dest, (done, total) => {
-          emit({ progress: { what: 'model', done, total } });
-          if (onProgress) onProgress('model', done, total);
-        });
-        return { file: dest, id: model.id, cached: false };
-      } catch (e) {
-        errors.push((e && e.message) || String(e));
+    for (const model of attempts) {
+      const raw = path.join(modelRoot, model.file);
+      const dest = model.quantize ? path.join(modelRoot, model.quantized) : raw;
+      if (await exists(dest)) return { file: dest, id: model.id, family: model.family, cached: true };
+
+      // A full-precision file left over from a quantisation that failed last
+      // time is worth a gigabyte and a half; re-verify it rather than re-fetch.
+      const urls = (await exists(raw)) ? [null].concat(model.urls) : model.urls;
+      for (const url of urls) {
+        try {
+          if (url) {
+            emit({
+              phase: 'downloading',
+              message: 'Downloading the ' + model.familyLabel + ' ' + model.label
+                + ' model (' + model.approxMB + ' MB)...'
+            });
+            await download(url, raw, (done, total) => {
+              emit({ progress: { what: 'model', done, total } });
+              if (onProgress) onProgress('model', done, total);
+            });
+          }
+
+          if (model.sha256) {
+            emit({ phase: 'extracting', message: 'Verifying the model...', progress: null });
+            const got = await sha256(raw);
+            if (got !== model.sha256) {
+              await fsp.rm(raw, { force: true });
+              throw new Error('checksum mismatch (' + got.slice(0, 12) + ')');
+            }
+          }
+
+          if (model.quantize) {
+            emit({ phase: 'extracting', message: 'Quantising the model...', progress: null });
+            try {
+              await quantize(exeDir, raw, dest, model.quantize);
+              await fsp.rm(raw, { force: true });
+            } catch (e) {
+              // Usable at full precision; keep it rather than throw the download away.
+              log('whisper: ' + ((e && e.message) || String(e)) + ', keeping f16');
+              return { file: raw, id: model.id, family: model.family, cached: false, quantized: false };
+            }
+          }
+          return { file: dest, id: model.id, family: model.family, cached: false };
+        } catch (e) {
+          errors.push(model.family + ': ' + ((e && e.message) || String(e)));
+        }
       }
     }
     throw new Error('model download failed. ' + errors.join('; '));
@@ -430,21 +505,26 @@ function createEngine({ userDataDir, log = () => {} } = {}) {
    * already running, which is what lets it serve as both the first-run
    * installer and the settings-changed handler.
    */
-  async function ensure({ build, modelTier, language, port, threads, force = false } = {}) {
+  async function ensure({ build, modelTier, language, family, port, threads, force = false } = {}) {
     if (busy) return busy;
     busy = (async () => {
       try {
         const unchanged = state.phase === 'ready'
-          && state.wanted === build && state.model === modelTier && child;
+          && state.wanted === build && state.model === modelTier
+          && state.wantedFamily === family && child;
         if (unchanged && !force) return state;
 
-        emit({ wanted: build, phase: 'downloading', message: '', progress: null, accel: null, device: '' });
+        emit({
+          wanted: build, wantedFamily: family, phase: 'downloading',
+          message: '', progress: null, accel: null, device: ''
+        });
         const got = await ensureBuild(build);
-        const model = await ensureModel(modelTier, language);
-        emit({ build: got.build.id, model: modelTier });
+        const model = await ensureModel(modelTier, language, family, path.dirname(got.exe));
+        emit({ build: got.build.id, model: modelTier, family: model.family });
         await launch({ build: got.build, exe: got.exe, modelFile: model.file, port, threads });
         await writeState({
           build: got.build.id, wanted: build, model: modelTier, modelFile: model.file,
+          family: model.family, wantedFamily: family,
           exe: got.exe, accel: state.accel, device: state.device, ts: Date.now()
         });
         return state;

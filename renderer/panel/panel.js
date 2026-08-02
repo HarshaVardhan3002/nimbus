@@ -79,6 +79,28 @@
   }
   new ResizeObserver(reportSize).observe(panel);
 
+  /**
+   * Flag a capped box while there is content below its bottom edge.
+   *
+   * The settings sheet and the history list both stop at a hard border in the
+   * middle of a row, which reads as a clipping bug rather than as more to see.
+   * The CSS fades that edge, but only while this class is on -- a list that
+   * already fits keeps its last row at full strength.
+   */
+  function watchOverflow(sel) {
+    const el = document.querySelector(sel);
+    if (!el) return;
+    const mark = () => el.classList.toggle('has-more',
+      el.scrollHeight - el.scrollTop - el.clientHeight > 2);
+    el.addEventListener('scroll', mark, { passive: true });
+    // The box is capped, so filling it changes the content and not the box:
+    // arriving rows need a mutation to be noticed, a tab switch needs a resize.
+    new ResizeObserver(mark).observe(el);
+    new MutationObserver(mark).observe(el, { childList: true, subtree: true });
+    mark();
+  }
+  ['.s-scroll', '.h-list'].forEach(watchOverflow);
+
   // Specular highlight tracks the cursor.
   panel.addEventListener('mousemove', (e) => {
     const r = panel.getBoundingClientRect();
@@ -754,6 +776,28 @@
     box.addEventListener('blur', () => finish(true));
   }
 
+  /**
+   * A stored message, read as one line of plain text.
+   *
+   * The preview is the raw message body, so a bolded answer arrived in the list
+   * as `**Fix:**` and a fenced block arrived as a wall of backticks. This is not
+   * a markdown parser and does not need to be -- it removes the marks that
+   * survive into a one-line summary and leaves the words.
+   */
+  function unmark(s) {
+    return String(s || '')
+      .replace(/```[\s\S]*?```/g, ' ')
+      .replace(/`([^`]*)`/g, '$1')
+      .replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1')
+      .replace(/^[ \t]{0,3}#{1,6}[ \t]+/gm, '')
+      .replace(/^[ \t]{0,3}>[ \t]?/gm, '')
+      .replace(/^[ \t]*[-*+][ \t]+/gm, '')
+      .replace(/(\*\*|__)(.+?)\1/g, '$2')
+      .replace(/\*(\S(?:.*?\S)?)\*/g, '$1')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
   async function renderHistory(query) {
     const items = query ? await app.historySearch(query) : await app.historyList();
     const list = $('#h-list');
@@ -771,10 +815,11 @@
       b.className = 'h-item';
       const t = document.createElement('span'); t.className = 't'; t.textContent = s.title;
       const m = document.createElement('span'); m.className = 'm';
+      // `snippet` exists only on search hits; the plain list carries `preview`.
+      // Reading just the former left every unsearched row with no context.
+      const gist = unmark(s.snippet || s.preview);
       m.textContent = fmtWhen(s.updatedAt) + '  ·  ' + s.count + (s.count === 1 ? ' message' : ' messages')
-        // `snippet` exists only on search hits; the plain list carries `preview`.
-        // Reading just the former left every unsearched row with no context.
-        + (s.snippet || s.preview ? '  ·  ' + (s.snippet || s.preview) : '');
+        + (gist ? '  ·  ' + gist : '');
       b.appendChild(t); b.appendChild(m);
 
       const tools = document.createElement('span');
@@ -1293,10 +1338,22 @@
     return 'loud speech only';
   }
 
+  /**
+   * Which transcription controls apply right now.
+   *
+   * The managed engine overrides the stored Server and Model on every start, so
+   * leaving those two rows on screen while it runs shows a pair of editable
+   * fields that describe nothing: they still read :8000 and faster-whisper
+   * while :8081 was serving CrisperWhisper. The engine's own status line below
+   * reports what is actually running, so the rows come back only when the user
+   * is the one pointing Nimbus at a server.
+   */
   function syncSttRows() {
     const mode = $('#f-stt').value;
-    $('#row-stt-url').classList.toggle('hidden', mode !== 'local');
-    $('#row-stt-model').classList.toggle('hidden', mode === 'off' || mode === 'gemini');
+    const managed = mode === 'local' && (((settings.stt || {}).engine || {}).manage !== false);
+    $('#row-stt-url').classList.toggle('hidden', mode !== 'local' || managed);
+    $('#row-stt-model').classList.toggle('hidden', mode === 'off' || mode === 'gemini' || managed);
+    $('#row-stt-refresh').classList.toggle('hidden', managed);
     $('#row-target-lang').classList.toggle('hidden', mode === 'off');
     // Nimbus only manages a server for the local engine; with OpenAI or Gemini
     // selected there is nothing on this machine to install.
@@ -1612,7 +1669,8 @@
     if (!s) return '';
     if (s.phase === 'ready') {
       const how = s.accel ? ('GPU · ' + (s.device || s.build)) : 'CPU';
-      return 'Running the ' + s.build + ' build on ' + how + ', at ' + s.endpoint + '.';
+      const weights = s.family === 'crisper' ? 'CrisperWhisper' : 'Whisper';
+      return 'Running ' + weights + ' on the ' + s.build + ' build, ' + how + ', at ' + s.endpoint + '.';
     }
     if (s.phase === 'error') return s.message || 'The engine failed.';
     if (s.message) return s.message;
@@ -1636,14 +1694,39 @@
       { id: 'auto', label: 'Automatic' + (info.decision ? ' (' + info.decision.build + ')' : '') });
     fillSelect($('#f-engine-model'), info.options.models,
       { id: 'auto', label: 'Automatic' + (info.decision ? ' (' + info.decision.modelTier + ')' : '') });
+    fillSelect($('#f-engine-family'), info.options.families || [],
+      { id: 'auto', label: 'Automatic (CrisperWhisper)' });
     $('#f-engine-build').value = cfg.build || 'auto';
     $('#f-engine-model').value = cfg.model || 'auto';
+    $('#f-engine-family').value = cfg.family || 'auto';
     $('#f-engine-manage').checked = cfg.manage !== false;
     $('#engine-hw').textContent = info.hardware || 'not probed yet';
+    paintFamilyNote(info);
     const on = cfg.manage !== false;
-    ['#row-engine-hw', '#row-engine-build', '#row-engine-model', '#row-engine-actions']
+    ['#row-engine-hw', '#row-engine-build', '#row-engine-family', '#row-engine-model', '#row-engine-actions']
       .forEach((sel) => $(sel).classList.toggle('hidden', !on));
+    $('#engine-family-note').classList.toggle('hidden', !on);
+    // Turning the managed engine on or off changes which Transcription rows
+    // mean anything, and that group is painted by the other function.
+    syncSttRows();
     paintEngine(info.status);
+  }
+
+  /**
+   * What the chosen weights cost the user.
+   *
+   * CrisperWhisper is the better transcriber for this app's purpose but it is
+   * English and German only and its licence is non-commercial research, and both
+   * of those are the user's decision to make, not ours to bury.
+   */
+  function paintFamilyNote(info) {
+    const chosen = (info.choice && info.choice.family) || 'crisper';
+    const fam = ((info.options && info.options.families) || []).find((f) => f.id === chosen);
+    const el = $('#engine-family-note');
+    if (!fam) { el.textContent = ''; return; }
+    const langs = fam.languages ? fam.languages.join(', ') : 'all languages';
+    el.textContent = fam.label + ' — ' + langs + ' · ' + fam.license
+      + (fam.id === 'crisper' ? ' · other languages fall back to Whisper automatically' : '');
   }
 
   app.on('stt:engine', (s) => paintEngine(s));
@@ -1655,14 +1738,16 @@
     await refreshEngine();
   });
 
-  ['#f-engine-build', '#f-engine-model'].forEach((sel) => $(sel).addEventListener('change', async () => {
+  ['#f-engine-build', '#f-engine-model', '#f-engine-family'].forEach((sel) => $(sel).addEventListener('change', async () => {
     const engine = Object.assign({}, (settings.stt || {}).engine, {
       build: $('#f-engine-build').value,
-      model: $('#f-engine-model').value
+      model: $('#f-engine-model').value,
+      family: $('#f-engine-family').value
     });
     settings.stt = Object.assign({}, settings.stt, { engine });
     // Saved, not installed: switching build is a download, so it waits for the button.
     await app.settingsSet({ stt: { engine } });
+    await refreshEngine();
   }));
 
   $('#engine-install').addEventListener('click', async () => {
@@ -1670,7 +1755,8 @@
     try {
       const s = await app.engineInstall({
         build: $('#f-engine-build').value,
-        model: $('#f-engine-model').value
+        model: $('#f-engine-model').value,
+        family: $('#f-engine-family').value
       });
       paintEngine(s);
     } catch (e) {

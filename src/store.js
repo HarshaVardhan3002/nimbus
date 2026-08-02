@@ -147,8 +147,16 @@ const DEFAULTS = {
       manage: true,
       // 'auto' follows the probe; otherwise 'cuda' | 'rocm' | 'vulkan' | 'cpu'
       build: 'auto',
-      // 'auto' sizes the model to memory; otherwise 'turbo' | 'turbo-q5' | 'small' | 'base'
+      // 'auto' sizes the model to memory; otherwise 'large' | 'turbo' | 'turbo-q5' | 'small' | 'base'
       model: 'auto',
+      /**
+       * Which weights. 'auto' means CrisperWhisper, a verbatim-trained Whisper
+       * fine-tune, wherever it has weights for the tier and the language;
+       * 'whisper' pins the stock MIT-licensed weights, which is the right choice
+       * for any language other than English or German and for commercial use,
+       * since the CrisperWhisper weights are non-commercial research only.
+       */
+      family: 'auto',
       port: 8081,
       // 0 means half the cores, which leaves room for the app itself
       threads: 0

@@ -571,6 +571,19 @@ body { width: 100%; }
 .s-title { font-family: var(--font-display); font-size: 16px; font-weight: 600; }
 .s-scroll { max-height: calc(var(--avail-h) * 0.60); overflow-y: auto; padding-right: 4px; }
 
+/**
+ * The clipped edge of a scrolling sheet.
+ *
+ * A list cut off mid-row at a hard border reads as a rendering fault. The fade
+ * is only present while something is actually below the fold -- a permanent
+ * one would wash out the last row of a list that already fits, and then it
+ * would be decoration rather than information.
+ */
+.s-scroll.has-more, .h-list.has-more {
+  -webkit-mask-image: linear-gradient(180deg, #000 calc(100% - 26px), transparent);
+  mask-image: linear-gradient(180deg, #000 calc(100% - 26px), transparent);
+}
+
 .s-group { margin-bottom: 18px; }
 .s-label {
   font-size: 11px;
@@ -631,6 +644,9 @@ body { width: 100%; }
 }
 .s-check input { accent-color: var(--accent); margin-top: 1px; }
 .s-check em { color: var(--tx-dim); font-style: normal; }
+/* A parenthetical rides on the label; a sentence gets its own line. Running a
+   full explanation on after the label made the two read as one long title. */
+.s-check.stacked em { display: block; margin-top: 2px; }
 
 /**
  * Progressive disclosure, gated once for the whole screen.

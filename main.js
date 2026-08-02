@@ -689,6 +689,13 @@ function engineChoice(settings) {
   return {
     build: eng.build && eng.build !== 'auto' ? eng.build : (auto.build || 'cpu'),
     modelTier: eng.model && eng.model !== 'auto' ? eng.model : (auto.modelTier || 'base'),
+    /**
+     * CrisperWhisper by default: it is a Whisper fine-tune that transcribes what
+     * was said instead of a tidied paraphrase, which is what a meeting or an
+     * interview needs. The catalog drops back to stock Whisper on its own for
+     * languages it was never trained on, so 'auto' is safe everywhere.
+     */
+    family: eng.family && eng.family !== 'auto' ? eng.family : 'crisper',
     language: cfg.language,
     port: eng.port || 8081,
     threads: eng.threads || 0
@@ -1371,6 +1378,7 @@ function registerIPC() {
     const patch = {};
     if (opts && opts.build) patch.build = opts.build;
     if (opts && opts.model) patch.model = opts.model;
+    if (opts && opts.family) patch.family = opts.family;
     if (Object.keys(patch).length) store.setSettings({ stt: { engine: patch } });
     clearTimeout(engineSyncTimer);
     const st = await startEngine({ force: true, reprobe: !!(opts && opts.reprobe) });

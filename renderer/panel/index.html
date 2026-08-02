@@ -314,7 +314,7 @@
           <div class="s-label">Local engine <span class="s-hint">downloaded on first run, not bundled</span></div>
           <label class="s-check">
             <input id="f-engine-manage" type="checkbox" />
-            <span>Let Nimbus run Whisper for me <em>(off: point Server above at your own)</em></span>
+            <span>Let Nimbus run Whisper for me <em>(off: Transcription above takes your own server)</em></span>
           </label>
           <div class="s-row" id="row-engine-hw">
             <span>This machine</span>
@@ -324,10 +324,15 @@
             <span>Build</span>
             <select id="f-engine-build"></select>
           </div>
+          <div class="s-row" id="row-engine-family">
+            <span>Weights</span>
+            <select id="f-engine-family"></select>
+          </div>
           <div class="s-row" id="row-engine-model">
             <span>Model</span>
             <select id="f-engine-model"></select>
           </div>
+          <div id="engine-family-note" class="s-hint"></div>
           <div class="s-row inline" id="row-engine-actions">
             <button id="engine-install" class="ghost-btn small"><span class="ic"></span><span>Install and start</span></button>
             <button id="engine-reprobe" class="ghost-btn small"><span class="ic"></span><span>Re-scan hardware</span></button>
@@ -431,7 +436,7 @@
 
         <div class="s-group" data-tab="privacy">
           <div class="s-label">Screen privacy</div>
-          <label class="s-check">
+          <label class="s-check stacked">
             <input id="f-stealth" type="checkbox" />
             <span>Keep out of screen recordings and shares
               <em>Excludes Nimbus from OBS, Zoom, Teams, Meet and screenshots, so a script or transcript on screen stays yours.</em></span>
