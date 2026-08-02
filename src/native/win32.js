@@ -275,7 +275,12 @@ function disableBlur(win) {
  * it goes to whatever is underneath. No JS hit-testing, no setIgnoreMouseEvents.
  *
  * Coordinates are PHYSICAL pixels, so callers must pre-multiply by scaleFactor.
- * CreateRoundRectRgn's right/bottom are exclusive, hence the +1.
+ *
+ * CreateRoundRectRgn's right and bottom are EXCLUSIVE, so passing the width
+ * itself yields exactly `width` columns. This used to pass width + 1, which
+ * left one physical pixel of unclipped window past the painted edge -- a
+ * hairline of the surface's own shadow, visible as a dark rim on a light
+ * desktop and as a hit-test area a pixel outside the shape.
  *
  * Ownership note: after a successful SetWindowRgn the OS owns the HRGN. We must
  * NOT DeleteObject it, or we free a region the window is still using.
@@ -288,7 +293,7 @@ function setRoundedRegion(win, widthPx, heightPx, radiusPx) {
   const h = Math.max(1, Math.round(heightPx));
   const d = Math.max(0, Math.round(radiusPx)) * 2;
   try {
-    const rgn = CreateRoundRectRgn(0, 0, w + 1, h + 1, d, d);
+    const rgn = CreateRoundRectRgn(0, 0, w, h, d, d);
     if (!rgn) return false;
     return SetWindowRgn(hwnd, rgn, true) !== 0;
   } catch {
@@ -314,9 +319,10 @@ function setUnionRegion(win, a, b) {
   const RGN_OR = 2;
   let r1 = 0n, r2 = 0n, dest = 0n;
   try {
+    // Right and bottom are exclusive; see setRoundedRegion.
     const mk = (r) => CreateRoundRectRgn(
       Math.round(r.x), Math.round(r.y),
-      Math.round(r.x + r.w) + 1, Math.round(r.y + r.h) + 1,
+      Math.round(r.x + r.w), Math.round(r.y + r.h),
       Math.round(r.radius) * 2, Math.round(r.radius) * 2
     );
     r1 = mk(a);

@@ -404,7 +404,7 @@ class WindowManager {
    * clipped to the pill's exact shape, so it has to grow to contain the menu
    * or the menu is simply cut off.
    */
-  setMenuOpen(open) {
+  setMenuOpen(open, rect) {
     this.menuOpen = !!open;
     if (!this.pill || this.pill.isDestroyed()) return;
     const b = this.pill.getBounds();
@@ -415,8 +415,9 @@ class WindowManager {
       return;
     }
 
-    const w = Math.max(this.pillSize.w, MENU_WIDTH);
-    const h = this.pillSize.h + MENU_GAP + MENU_HEIGHT;
+    const m = this._menuRect(rect);
+    const w = Math.max(this.pillSize.w, Math.ceil(m.x + m.w));
+    const h = Math.max(this.pillSize.h, Math.ceil(m.y + m.h));
     this._place(this.pill, b.x, b.y, w, h);
 
     // Clip to pill OR menu, not to the bounding rectangle. Dropping the region
@@ -426,9 +427,29 @@ class WindowManager {
     const sf = screen.getDisplayMatching(this.pill.getBounds()).scaleFactor || 1;
     win32.setUnionRegion(this.pill,
       { x: 0, y: 0, w: this.pillSize.w * sf, h: this.pillSize.h * sf, radius: PILL.radius * sf },
-      { x: MENU_INSET * sf, y: (this.pillSize.h + MENU_GAP) * sf,
-        w: MENU_WIDTH * sf, h: MENU_HEIGHT * sf, radius: 12 * sf }
+      { x: m.x * sf, y: m.y * sf, w: m.w * sf, h: m.h * sf, radius: m.radius * sf }
     );
+  }
+
+  /**
+   * The menu's rectangle in the pill window's own coordinates.
+   *
+   * The renderer measures it and sends it along, because it is the only side
+   * that knows where its CSS put it. The constants are a fallback for a report
+   * that never arrived -- they were the primary source until the stylesheet
+   * drifted away from them, at which point the window was clipped to a box
+   * wider and taller than the menu and the difference showed as a grey shelf.
+   */
+  _menuRect(rect) {
+    const num = (v) => typeof v === 'number' && isFinite(v);
+    if (rect && num(rect.x) && num(rect.y) && num(rect.w) && num(rect.h)
+      && rect.w > 0 && rect.h > 0 && rect.w < 2000 && rect.h < 2000) {
+      return { x: rect.x, y: rect.y, w: rect.w, h: rect.h, radius: num(rect.radius) ? rect.radius : 12 };
+    }
+    return {
+      x: MENU_INSET, y: this.pillSize.h + MENU_GAP,
+      w: MENU_WIDTH, h: MENU_HEIGHT, radius: 12
+    };
   }
 
   setPillSize(w, h) {

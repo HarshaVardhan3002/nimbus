@@ -1595,7 +1595,11 @@ function registerIPC() {
     toPanel('open-settings', {});
   });
   ipcMain.on('app:quit', () => { store.flush(); app.quit(); });
-  ipcMain.on('ui:menu-open', (_e, open) => { if (wm) wm.setMenuOpen(open); });
+  // The renderer sends the menu's measured rectangle with it; the window is
+  // clipped to that shape, so a stale copy of it in main is a visible artefact.
+  ipcMain.on('ui:menu-open', (_e, m) => {
+    if (wm) wm.setMenuOpen(m && m.open, m && m.rect);
+  });
   ipcMain.on('ui:status', (_e, p) => broadcast('status', p || {}));
   ipcMain.on('log', (_e, msg) => console.log('[renderer]', msg));
 }

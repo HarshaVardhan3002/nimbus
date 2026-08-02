@@ -182,12 +182,21 @@ html, body {
 }
 
 /* When no compositor blur is available, the surface carries itself. Text
-   legibility is not negotiable, so this goes MORE opaque, not less. */
+   legibility is not negotiable, so this goes MORE opaque, not less.
+ *
+ * No drop shadow here, and that is not a taste decision. In shaped mode the
+ * OS window is clipped to this element's exact outline, so a shadow outside it
+ * has nowhere to land: every pixel of it is either clipped away or -- wherever
+ * the clip is a hair larger than the box, as it is around the pill menu --
+ * painted as a hard-edged grey shelf with no falloff. A shadow that can only
+ * appear as an artefact is worse than no shadow. The border and the top-edge
+ * highlight do the separating. */
 html.shaped .glass,
 html.no-native .glass {
   background: var(--bg-solid);
   backdrop-filter: blur(20px) saturate(120%);
   -webkit-backdrop-filter: blur(20px) saturate(120%);
+  box-shadow: inset 0 1px 0 var(--top-light);
 }
 
 /* DWM rounds the frame itself at ~8px in backdrop modes; match it. */

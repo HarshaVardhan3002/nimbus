@@ -125,7 +125,7 @@ contextBridge.exposeInMainWorld('nimbus', {
   quit: () => ipcRenderer.send('app:quit'),
   // The pill's menu paints outside the pill, so the window must grow to
   // contain it -- the region clip would otherwise slice it off.
-  menuOpen: (open) => ipcRenderer.send('ui:menu-open', !!open),
+  menuOpen: (open, rect) => ipcRenderer.send('ui:menu-open', { open: !!open, rect: rect || null }),
 
   // ---- misc ----
   status: (payload) => ipcRenderer.send('ui:status', payload),

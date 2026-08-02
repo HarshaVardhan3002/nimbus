@@ -129,10 +129,25 @@
   }
 
   // ---- size reporting ------------------------------------------------------
+  /**
+   * The pill is measured, then pinned to whole pixels.
+   *
+   * `width: max-content` lands on fractions -- 100.6px at rest -- and an OS
+   * window can only be an integer, so the window was a pixel and a half wider
+   * than the shape drawn inside it. Clipped to the window rather than to the
+   * pill, that leftover column showed as a dark rim down one side. Rounding up
+   * and then setting the width back means the element fills the window exactly.
+   *
+   * The width is cleared before every measurement so this reads the content's
+   * own size rather than the answer it gave last time, which would freeze the
+   * pill at its first width and stop the stage from ever expanding.
+   */
   let lastW = 0, lastH = 0;
   function reportSize() {
+    pill.style.width = 'max-content';
     const r = pill.getBoundingClientRect();
     const w = Math.ceil(r.width), h = Math.ceil(r.height);
+    pill.style.width = w + 'px';
     if (w === lastW && h === lastH) return;
     lastW = w; lastH = h;
     app.pillSize(w, h);
@@ -140,12 +155,35 @@
   new ResizeObserver(reportSize).observe(pill);
 
   // ---- menu ----------------------------------------------------------------
+  /**
+   * Where the menu actually is, in CSS pixels.
+   *
+   * Main clips the window to the pill's shape OR this rectangle, and it used to
+   * carry its own copy of these numbers. The CSS moved and the constants did
+   * not: the clip ended up 19px wider and 29px taller than the menu and two
+   * pixels above it, so the menu's top row was shaved off and the surplus
+   * around it showed as a grey shelf. Measuring beats mirroring.
+   *
+   * offset* rather than getBoundingClientRect(): the open transition animates a
+   * translate, and a rect read mid-flight would clip the window to wherever the
+   * menu happened to be at that instant.
+   */
+  function menuRect() {
+    return {
+      x: menu.offsetLeft,
+      y: menu.offsetTop,
+      w: Math.ceil(menu.offsetWidth),
+      h: Math.ceil(menu.offsetHeight),
+      radius: parseFloat(getComputedStyle(menu).borderTopLeftRadius) || 12
+    };
+  }
+
   function openMenu(open) {
     menu.classList.toggle('open', open);
     $('#mark').setAttribute('aria-expanded', String(open));
     // The menu paints outside the pill, so the window has to grow to contain
     // it — the region clip would otherwise slice it off.
-    app.menuOpen(open);
+    app.menuOpen(open, open ? menuRect() : null);
   }
   $('#mark').addEventListener('click', (e) => {
     e.stopPropagation();
