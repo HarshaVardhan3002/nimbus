@@ -19,11 +19,10 @@ const { pcmToWav } = require('./wav');
 const { cachedClient } = require('./clients');
 
 // --------------------------------------------------------------- transports
-async function transcribeOpenAICompatible({ baseURL, apiKey, model, language, wav, timeoutMs = 30000 }) {
-  const base = (baseURL || 'https://api.openai.com/v1').replace(/\/+$/, '');
+async function postAudio(url, { apiKey, model, language, wav, timeoutMs = 30000 }) {
   const form = new FormData();
   form.append('file', new Blob([wav], { type: 'audio/wav' }), 'audio.wav');
-  form.append('model', model);
+  if (model) form.append('model', model);
   form.append('response_format', 'json');
   if (language) form.append('language', language);
 
@@ -32,9 +31,7 @@ async function transcribeOpenAICompatible({ baseURL, apiKey, model, language, wa
   try {
     const headers = {};
     if (apiKey) headers.Authorization = 'Bearer ' + apiKey;
-    const res = await fetch(base + '/audio/transcriptions', {
-      method: 'POST', headers, body: form, signal: ctrl.signal
-    });
+    const res = await fetch(url, { method: 'POST', headers, body: form, signal: ctrl.signal });
     if (!res.ok) {
       const body = await res.text().catch(() => '');
       const err = new Error('HTTP ' + res.status + (body ? ': ' + body.slice(0, 200) : ''));
@@ -46,6 +43,54 @@ async function transcribeOpenAICompatible({ baseURL, apiKey, model, language, wa
   } finally {
     clearTimeout(timer);
   }
+}
+
+async function transcribeOpenAICompatible({ baseURL, apiKey, model, language, wav, timeoutMs = 30000 }) {
+  const base = (baseURL || 'https://api.openai.com/v1').replace(/\/+$/, '');
+  return postAudio(base + '/audio/transcriptions', { apiKey, model, language, wav, timeoutMs });
+}
+
+/**
+ * Local servers, which do not agree on a route.
+ *
+ * faster-whisper-server, Speaches and LM Studio serve the OpenAI shape at
+ * /v1/audio/transcriptions. whisper.cpp's own server -- the one Nimbus
+ * downloads and manages -- serves /inference and answers the OpenAI route with
+ * a plain 404, so both are tried and the winner is remembered per base URL:
+ * one wasted round trip on the first utterance after a settings change, none
+ * after that.
+ */
+const LEARNED = new Map();
+
+function localCandidates(baseURL) {
+  const base = (baseURL || 'http://127.0.0.1:8081').replace(/\/+$/, '');
+  const versioned = /\/v\d+$/.test(base);
+  const origin = versioned ? base.replace(/\/v\d+$/, '') : base;
+  return [
+    (versioned ? base : base + '/v1') + '/audio/transcriptions',
+    origin + '/inference'
+  ];
+}
+
+async function transcribeLocal({ baseURL, model, language, wav, timeoutMs }) {
+  const candidates = localCandidates(baseURL);
+  const known = LEARNED.get(baseURL);
+  const order = known ? [known, ...candidates.filter((u) => u !== known)] : candidates;
+
+  let lastErr = null;
+  for (const url of order) {
+    try {
+      const text = await postAudio(url, { apiKey: '', model, language, wav, timeoutMs });
+      LEARNED.set(baseURL, url);
+      return text;
+    } catch (e) {
+      // Only a wrong route is worth retrying elsewhere; a 500 means the server
+      // took the audio and failed, and asking it again on another path will not help.
+      if (e && (e.status === 404 || e.status === 405)) { lastErr = e; continue; }
+      throw e;
+    }
+  }
+  throw lastErr || new Error('no transcription endpoint answered');
 }
 
 async function transcribeGemini({ apiKey, wav }) {
@@ -79,9 +124,8 @@ function createSTT(settings) {
     p: 'local',
     label: 'local Whisper',
     endpoint: cfg.localBaseURL,
-    fn: (wav) => transcribeOpenAICompatible({
+    fn: (wav) => transcribeLocal({
       baseURL: cfg.localBaseURL,
-      apiKey: '',
       model: cfg.localModel || 'whisper-1',
       language, wav,
       timeoutMs: 60000 // a cold local model load is slow the first time
@@ -139,7 +183,7 @@ function createSTT(settings) {
             label: c.label,
             endpoint: c.endpoint,
             message: refused && c.p === 'local'
-              ? 'No transcription server at ' + c.endpoint + '. Start faster-whisper-server (or point Settings at another endpoint).'
+              ? 'No transcription server at ' + c.endpoint + '. Install the local engine in Settings, or point it at another endpoint.'
               : ((e && e.message) || String(e))
           };
         }
@@ -149,4 +193,4 @@ function createSTT(settings) {
   };
 }
 
-module.exports = { createSTT };
+module.exports = { createSTT, localCandidates };

@@ -8,6 +8,15 @@
 
 const { contextBridge, ipcRenderer } = require('electron');
 
+/**
+ * Channels a renderer may listen on. The check script reads this array
+ * literally, so it holds names and nothing else -- notes go here instead.
+ *
+ * 'transcript'        every utterance, for the pill's ticker.
+ * 'transcript:stage'  the user's own speech, staged in the composer unsent.
+ * 'transcript:heard'  system speech, written into the chat as a turn.
+ * 'stt:engine'        install progress and health of the managed local engine.
+ */
 const INBOUND = [
   'panel:state',
   'llm:start',
@@ -17,7 +26,10 @@ const INBOUND = [
   'llm:error',
   'status',
   'transcript',
+  'transcript:stage',
+  'transcript:heard',
   'audio:digest',
+  'stt:engine',
   'context:usage',
   'compact:state',
   'compact:done',
@@ -46,6 +58,13 @@ contextBridge.exposeInMainWorld('nimbus', {
   discoverModels: (id, opts) => ipcRenderer.invoke('providers:discover', id, opts),
   testProvider: (id) => ipcRenderer.invoke('providers:test', id),
   discoverSttModels: () => ipcRenderer.invoke('stt:discover'),
+
+  // ---- the managed local transcription engine ----
+  engineStatus: () => ipcRenderer.invoke('engine:status'),
+  engineInstall: (opts) => ipcRenderer.invoke('engine:install', opts),
+  engineStop: () => ipcRenderer.invoke('engine:stop'),
+  engineProbe: () => ipcRenderer.invoke('engine:probe'),
+
   nativeStatus: () => ipcRenderer.invoke('native:status'),
   displayInfo: () => ipcRenderer.invoke('display:info'),
   applySettings: (patch) => ipcRenderer.invoke('ui:apply', patch),
@@ -80,6 +99,15 @@ contextBridge.exposeInMainWorld('nimbus', {
    * clone moves the bytes rather than copying them through a JSON round-trip.
    */
   utterance: (meta, buffer) => ipcRenderer.send('audio:utterance', meta, buffer),
+  /**
+   * The VAD's opinion of whether a channel is carrying speech RIGHT NOW.
+   *
+   * Sent as well as the utterance, not instead of it. An utterance only lands
+   * when the speaker stops or the 15s cap cuts them off, so anything that waits
+   * for utterances to judge silence concludes that unbroken narration is silent
+   * for two thirds of its length.
+   */
+  speech: (channel, active) => ipcRenderer.send('audio:speech', { channel, active: !!active }),
   listenState: (active) => ipcRenderer.send('listen:state', active),
   /**
    * The pill's talk button, held. Merged in main with the global hold-to-talk

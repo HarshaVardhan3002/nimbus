@@ -195,6 +195,16 @@ const DIGEST_RULES =
 const DIGEST = {
   summarize: {
     label: 'summary',
+    /**
+     * Whether the target language belongs in the prompt at all.
+     *
+     * A summary is written in the language of the audio, so a "Target language:"
+     * header here is a line the rest of the prompt never explains. A small model
+     * handed an unexplained header treats it as something to continue, and the
+     * digest comes back as that header repeated until the budget runs out --
+     * observed live, on real audio.
+     */
+    wantsLang: false,
     system: () =>
       'You are Nimbus, keeping a running account of audio playing on the user\'s machine -- a meeting, '
       + 'a call, a lecture or a video. You are not addressed and you never reply to anyone in it.\n'
@@ -208,6 +218,7 @@ const DIGEST = {
 
   translate: {
     label: 'translation',
+    wantsLang: true,
     system: (lang) =>
       'You are Nimbus, translating audio the user is listening to into ' + lang + '. '
       + 'Preserve speaker order and tone. A line already in ' + lang + ' passes through unchanged.\n'
@@ -223,6 +234,7 @@ const DIGEST = {
 
   both: {
     label: 'translation',
+    wantsLang: true,
     system: (lang) =>
       'You are Nimbus, following audio the user is listening to and rendering it into ' + lang + '.\n'
       + DIGEST_RULES + '\n'
@@ -239,6 +251,10 @@ const DIGEST = {
  * The carried gist goes FIRST and is labelled as settled background, because a
  * model handed two blocks of speech with no marking will summarise both and the
  * digest stream starts repeating itself every few minutes.
+ *
+ * `targetLang` is expected to be null unless the mode actually translates -- see
+ * `wantsLang` above. Passing it regardless is what made a summarising model echo
+ * the header instead of writing a summary.
  */
 function buildDigest({ turns, gist, targetLang }) {
   const heard = formatTranscript(turns, 0, 'them') || formatTranscript(turns, 0);
@@ -270,6 +286,84 @@ function splitDigest(raw) {
   // No contract line. Recover one so the thread does not break at this block.
   const sentence = text.split(/(?<=[.!?])\s/)[0] || first;
   return { gist: sentence.trim().slice(0, 160), body: text };
+}
+
+/**
+ * Did the model come apart instead of answering?
+ *
+ * splitDigest is deliberately forgiving, and it has to be -- a summary that
+ * ignored the format is still a summary. But forgiveness has a floor. A small
+ * model summarising an hour of speech occasionally falls into a sampling loop
+ * and emits one line, or one fragment of a word, until its budget is gone. That
+ * output survives every check above: it is non-empty, it has a first line, and
+ * splitDigest happily lifts a "gist" out of it -- which is then fed to the NEXT
+ * block as settled background, so one collapse poisons the thread behind it.
+ *
+ * Cheaper to detect than to live with. Rejecting throws, and a thrown digest
+ * keeps its audio pending for the next trigger rather than losing it, so the
+ * cost of a false positive is one delayed digest and the cost of a miss is a
+ * conversation of nonsense.
+ */
+function looksDegenerate(raw) {
+  // Bounded: this runs on model output, and the pathological cases are long.
+  const s = String(raw || '').slice(0, 4000);
+  if (s.length < 40) return false;
+
+  /**
+   * The same line, again and again. Three is well past coincidence: a digest is
+   * at most four bullets and each is supposed to carry a different fact.
+   */
+  const counts = new Map();
+  for (const line of s.split('\n')) {
+    const l = line.trim();
+    if (l.length < 4) continue;
+    const n = (counts.get(l) || 0) + 1;
+    if (n >= 3) return true;
+    counts.set(l, n);
+  }
+
+  // A fragment stuttering inside one line -- "ownloadloadloadload". Speech does
+  // not do this, and neither does a transcript of it; sampling does.
+  if (/(.{2,12}?)\1{4,}/.test(s.replace(/\s+/g, ' '))) return true;
+
+  /**
+   * Vocabulary collapse: plenty of words, almost none of them different. Real
+   * prose of this length does not come close to the threshold -- an ordinary
+   * four-bullet digest lands around 0.7 unique.
+   */
+  const words = s.toLowerCase().match(/[a-z0-9']+/g) || [];
+  if (words.length >= 40 && new Set(words).size / words.length < 0.3) return true;
+
+  /**
+   * The model answering the request instead of doing it -- "Please provide the
+   * transcript you would like me to process", written over a transcript that was
+   * right there in the prompt. Seen once in roughly eight digests and never
+   * reproduced, which is the reason it is caught here rather than prevented: it
+   * is coherent English, so nothing above it fires, and it lands in the record
+   * as a digest.
+   *
+   * Length-bounded on purpose. Someone in a meeting can say "please send me the
+   * transcript" and that belongs in the summary; a digest that is nothing BUT
+   * this sentence is the model talking to itself.
+   */
+  if (s.length < 240 && /\b(provide|share|paste|supply|send)\b[^.]{0,40}\b(transcript|audio|text)\b/i.test(s)) {
+    return true;
+  }
+  if (s.length < 240 && /\b(no|any|don't see|do not see|didn't receive)\b[^.]{0,30}\b(transcript|audio)\b/i.test(s)) {
+    return true;
+  }
+
+  /**
+   * Structured data where prose was asked for. A small model handed a short,
+   * meeting-shaped fragment will sometimes decide the job is extraction and
+   * answer with a JSON object of start times and confidence scores -- observed
+   * live. It is not degenerate and not a refusal; it is simply the wrong artefact
+   * to put in a running account of a meeting.
+   */
+  const head = s.replace(/^```[a-z]*\s*/i, '').trimStart();
+  if ((head.startsWith('{') || head.startsWith('[')) && /"\s*:/.test(head)) return true;
+
+  return false;
 }
 
 // ------------------------------------------------------------------ compaction
@@ -395,8 +489,32 @@ function compactPrefill(text) {
   ];
 }
 
+/**
+ * A stretch of system audio, as a turn the model can read.
+ *
+ * The tag is the whole point. Without it the model receives someone else's
+ * words in the user's own voice and answers as though the user had said them --
+ * which is wrong in both directions: it attributes the speaker's claims to the
+ * user, and it treats overheard speech as an instruction addressed to it.
+ *
+ * One turn, not two. Unlike a compaction this arrives continuously, so the
+ * canned acknowledgement compactPrefill uses would double the count of
+ * something already repeating.
+ */
+function heardPrefill(text) {
+  const doc = String(text || '').trim();
+  if (!doc) return [];
+  return [{
+    role: 'user',
+    text: '[transcribed from system audio -- other people speaking near this machine, '
+      + 'not typed or spoken by the user]\n'
+      + doc
+  }];
+}
+
 module.exports = {
   MODES, formatTranscript,
-  DIGEST, buildDigest, splitDigest,
-  COMPACT, COMPACT_SECTIONS, buildCompact, parseCompact, compactPrefill
+  DIGEST, buildDigest, splitDigest, looksDegenerate,
+  COMPACT, COMPACT_SECTIONS, buildCompact, parseCompact, compactPrefill,
+  heardPrefill
 };

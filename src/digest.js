@@ -80,6 +80,10 @@ function createDigest({ getSettings, log, onDigest }) {
   let failures = 0;
   let muted = false;
   let listening = false;
+  /** Is the system channel carrying speech at this instant? See speech(). */
+  let speaking = false;
+  /** When it last stopped, so a late transcript does not restart the count. */
+  let quietAt = 0;
   /** Gist of the previous block, so a long session reads as one thread. */
   let lastGist = '';
   let seq = 0;
@@ -145,8 +149,58 @@ function createDigest({ getSettings, log, onDigest }) {
       return;
     }
 
-    armSilence(c.silenceMs);
     armCeiling(c.ceilingMs);
+
+    /**
+     * A transcript arriving is not evidence that the audio stopped.
+     *
+     * An utterance is cut at 15 seconds whether or not the speaker paused, so
+     * unbroken narration delivers a transcript every 15 seconds with no gap in
+     * the sound at all. Arming a 5-second silence timer on arrival therefore
+     * fired mid-sentence on every continuous source, chopped blocks at
+     * transcription boundaries instead of at pauses, and made the ceiling
+     * unreachable -- the trigger that exists precisely for audio that never
+     * pauses.
+     *
+     * So: while the VAD says the channel is live, only the size cap and the
+     * ceiling can close a block. The remaining wait is measured from when the
+     * sound actually stopped, not from when this text showed up.
+     */
+    if (speaking) { clearSilence(); return; }
+    armSilence(remainingQuiet(c.silenceMs));
+  }
+
+  /** How much of the silence window is left, given when the audio went quiet. */
+  function remainingQuiet(silenceMs) {
+    if (!quietAt) return silenceMs;
+    return Math.max(0, silenceMs - (Date.now() - quietAt));
+  }
+
+  /**
+   * The VAD's live view of the system channel.
+   *
+   * Only 'them' matters: the microphone is push-to-talk by default and is never
+   * digested, so letting it disarm the silence timer would mean answering Nimbus
+   * out loud keeps a block from ever closing.
+   *
+   * Optional by design. If nothing ever calls this -- an older renderer, a build
+   * where the VAD is quiet -- `speaking` stays false and the timers behave
+   * exactly as they did before.
+   */
+  function speech(channel, active) {
+    if (channel !== 'them') return;
+    if (active) {
+      speaking = true;
+      quietAt = 0;
+      // A block is not finished while the audio is still running.
+      clearSilence();
+      return;
+    }
+    if (!speaking) return;
+    speaking = false;
+    quietAt = Date.now();
+    // Nothing heard yet means nothing to close; the first turn will arm it.
+    if (pending.length) armSilence(cfg().silenceMs);
   }
 
   /**
@@ -215,7 +269,13 @@ function createDigest({ getSettings, log, onDigest }) {
         // Audio resumed while that was being written. Give it a real boundary
         // unless it has already outgrown one.
         if (estimateTurns(pending) >= now.maxTokens) fire('size');
-        else { armSilence(now.silenceMs); armCeiling(now.ceilingMs); }
+        else {
+          armCeiling(now.ceilingMs);
+          // Same rule as push(): if the audio never stopped while that digest
+          // was being written, there is no boundary to count from yet.
+          if (speaking) clearSilence();
+          else armSilence(remainingQuiet(now.silenceMs));
+        }
       });
   }
 
@@ -235,6 +295,9 @@ function createDigest({ getSettings, log, onDigest }) {
     }
     clearSilence();
     clearCeiling();
+    // The channel is gone, so whatever the VAD last said about it is stale.
+    speaking = false;
+    quietAt = 0;
     fire('stop');
   }
 
@@ -247,6 +310,8 @@ function createDigest({ getSettings, log, onDigest }) {
     clearCeiling();
     pending = [];
     listening = false;
+    speaking = false;
+    quietAt = 0;
   }
 
   function stats() {
@@ -254,11 +319,11 @@ function createDigest({ getSettings, log, onDigest }) {
       pending: pending.length,
       pendingTokens: estimateTurns(pending),
       pendingWords: wordsIn(pending),
-      inFlight, failures, muted, listening, seq
+      inFlight, failures, muted, listening, speaking, seq
     };
   }
 
-  return { push, setListening, reset, stop, stats, flush: () => fire('manual') };
+  return { push, speech, setListening, reset, stop, stats, flush: () => fire('manual') };
 }
 
 module.exports = { createDigest, DEFAULTS };

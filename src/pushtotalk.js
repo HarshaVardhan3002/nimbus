@@ -52,6 +52,10 @@ const MOD_VK = {
   super: 0x5b, meta: 0x5b, cmd: 0x5b, command: 0x5b
 };
 
+// Side-specific virtual keys, needed only to tell AltGr apart from Ctrl+Alt.
+const VK_CONTROL = 0x11, VK_MENU = 0x12;
+const VK_RCONTROL = 0xa3, VK_LMENU = 0xa4;
+
 const NAMED_VK = {
   space: 0x20, return: 0x0d, enter: 0x0d, tab: 0x09, escape: 0x1b, esc: 0x1b,
   backspace: 0x08, delete: 0x2e, insert: 0x2d, home: 0x24, end: 0x23,
@@ -171,7 +175,31 @@ class PushToTalk {
         if (!win32.keyDown(m)) { on = false; break; }
       }
     }
+    if (on && this._isAltGr()) on = false;
     this._set(on);
+  }
+
+  /**
+   * Is this Ctrl+Alt actually AltGr?
+   *
+   * On every international layout AltGr synthesises left Ctrl down alongside
+   * right Alt, so a Ctrl+Alt chord fires on ordinary typing: AltGr+Space is a
+   * non-breaking space on a dozen layouts, and the default talk chord is
+   * Control+Alt+Space. The mic opened while people were writing an email, which
+   * is the other half of "the shortcut is very buggy".
+   *
+   * The signature is exact -- left Ctrl and right Alt, with neither of the other
+   * two down. A real Ctrl+Alt press that happens to use those same two physical
+   * keys is indistinguishable from AltGr at this layer (Windows itself cannot
+   * tell them apart either), so it is rejected too; every other combination of
+   * sides still works, which leaves the chord usable on US layouts and safe on
+   * the rest.
+   */
+  _isAltGr() {
+    const c = this.chord;
+    const wants = (vk) => c.key === vk || c.mods.indexOf(vk) !== -1;
+    if (!wants(VK_CONTROL) || !wants(VK_MENU)) return false;
+    return !win32.keyDown(VK_RCONTROL) && !win32.keyDown(VK_LMENU);
   }
 
   _set(on) {

@@ -164,7 +164,10 @@ function metaOf(m) {
   // 'covers' and 'folded' belong to a compaction (role 'summary'): without
   // 'covers' a reloaded session cannot tell which turns the summary replaces,
   // and would send both the summary and everything it already accounts for.
-  for (const k of ['mode', 'model', 'provider', 'tier', 'kind', 'gist', 'from', 'to', 'covers', 'folded']) {
+  // 'channel' belongs to a transcript (role 'heard'): a replayed session has to
+  // be able to tell overheard speech from the user's own words, or a reload
+  // would quietly re-attribute it.
+  for (const k of ['mode', 'model', 'provider', 'tier', 'kind', 'gist', 'from', 'to', 'covers', 'folded', 'channel']) {
     if (m[k] != null) out[k] = m[k];
   }
   return Object.keys(out).length ? out : null;
@@ -238,7 +241,13 @@ function contextTurns(session, limit) {
   for (let i = 0; i < msgs.length; i++) {
     if (summary && i <= summary.covers) continue;
     const m = msgs[i];
-    if (m.role !== 'user' && m.role !== 'assistant') continue;
+    /**
+     * 'heard' is system audio the user chose to put in the conversation. It has
+     * to reach the model -- that is the entire reason it was appended rather
+     * than filed as a note -- but it is not the user speaking, so the caller
+     * wraps it before it goes on the wire. See prompts.heardPrefill.
+     */
+    if (m.role !== 'user' && m.role !== 'assistant' && m.role !== 'heard') continue;
     if (!String(m.content || '').trim()) continue;
     live.push({ role: m.role, text: m.content });
   }

@@ -55,6 +55,8 @@
   $('#test-provider .ic').innerHTML = icon('zap', { size: 12 });
   $('#refresh-stt .ic').innerHTML = icon('mic', { size: 12 });
   $('#ptt-reset .ic').innerHTML = icon('refresh-cw', { size: 12 });
+  $('#engine-install .ic').innerHTML = icon('zap', { size: 12 });
+  $('#engine-reprobe .ic').innerHTML = icon('monitor', { size: 12 });
 
   // ---- viewport-independent layout caps ------------------------------------
   function applyAvailableHeight(h) {
@@ -94,7 +96,83 @@
       .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
       .replace(/(^|[\s(])\*([^*\s][^*]*)\*/g, '$1<em>$2</em>');
   }
+  /**
+   * Maths, lifted out before markdown gets near it.
+   *
+   * TeX and markdown fight over the same punctuation: `a_1` is a subscript to
+   * one and an italic run to the other, `\*` is an operator to one and an
+   * escape to the other, and esc() would turn every `<` in an inequality into
+   * an entity. So each formula is pulled out first, replaced by an opaque
+   * token, and put back rendered once the markdown pass has finished.
+   *
+   * The token is deliberately plain alphanumerics: it has to survive esc() and
+   * every inline() regex untouched.
+   */
+  const MATH_TOKEN = (i) => 'kaTeXmathTOKEN' + i + 'END';
+  const CODE_TOKEN = (i) => 'kaTeXcodeTOKEN' + i + 'END';
+
+  function liftMath(text, out) {
+    const grab = (tex, display) => {
+      out.push({ tex, display });
+      return MATH_TOKEN(out.length - 1);
+    };
+
+    /**
+     * Code is protected first and unconditionally.
+     *
+     * `$HOME` in a shell snippet and `$i` in a loop are not formulae, and a
+     * message about awk or jq is exactly the kind that would otherwise come out
+     * as unreadable italic maths. An unterminated fence is included on purpose:
+     * mid-stream the closing ``` has not arrived yet, and treating the tail as
+     * prose would render half a code block as equations for a second.
+     */
+    const code = [];
+    const hide = (m) => { code.push(m); return CODE_TOKEN(code.length - 1); };
+
+    const lifted = String(text)
+      .replace(/```[\s\S]*?(?:```|$)/g, hide)
+      .replace(/`[^`\n]*`/g, hide)
+      // Longest delimiters first, or $$..$$ is eaten as two empty $..$ pairs.
+      .replace(/\$\$([\s\S]+?)\$\$/g, (_m, t) => grab(t, true))
+      .replace(/\\\[([\s\S]+?)\\\]/g, (_m, t) => grab(t, true))
+      .replace(/\\\(([\s\S]+?)\\\)/g, (_m, t) => grab(t, false))
+      /**
+       * Single `$`. Guarded so prices are not swallowed: no space just inside
+       * either delimiter, no newline within, and a body that is not merely a
+       * number -- which is what makes "$5 and $10 for the licence" safe.
+       */
+      .replace(/\$(?!\s)([^\n$]*[^\s$])\$/g, (m, t) =>
+        (/^[\d.,]+$/.test(t) ? m : grab(t, false)));
+
+    return lifted.replace(/kaTeXcodeTOKEN(\d+)END/g, (m, i) => {
+      const c = code[Number(i)];
+      return c === undefined ? m : c;
+    });
+  }
+
+  function dropMath(html, list) {
+    if (!list.length) return html;
+    return html.replace(/kaTeXmathTOKEN(\d+)END/g, (m, i) => {
+      const item = list[Number(i)];
+      if (!item) return m;
+      // throwOnError:false renders the offending source in red rather than
+      // taking the whole message down with it -- a half-streamed formula must
+      // never blank an answer.
+      try {
+        return window.katex.renderToString(item.tex, {
+          displayMode: item.display,
+          throwOnError: false,
+          output: 'htmlAndMathml'
+        });
+      } catch {
+        return '<code>' + esc(item.tex) + '</code>';
+      }
+    });
+  }
+
   function renderMarkdown(text) {
+    const math = [];
+    text = liftMath(text, math);
     const lines = text.split('\n');
     let html = '', inCode = false, listType = null, buf = [];
     const closeList = () => { if (listType) { html += listType === 'ul' ? '</ul>' : '</ol>'; listType = null; } };
@@ -130,7 +208,7 @@
     }
     flushP(); closeList();
     if (inCode) html += '</code></pre>';
-    return html;
+    return dropMath(html, math);
   }
 
   // ---- messages ------------------------------------------------------------
@@ -232,6 +310,73 @@
     messages.appendChild(wrap);
     if (atBottom) messages.scrollTop = messages.scrollHeight;
     reportSize();
+  }
+
+  /**
+   * System speech, in the conversation.
+   *
+   * A turn, unlike a digest -- it has a bubble and it sits in the thread --
+   * because the model really does read it and pretending otherwise would make
+   * the chat a dishonest picture of the context. It is visibly not the user's
+   * turn though: its own colour, an ear on it, and the speaker attributed, so
+   * nobody reads their own words into someone else's mouth.
+   */
+  function addHeard(h) {
+    const text = (h && h.text) || '';
+    if (!text.trim()) return;
+
+    const wrap = document.createElement('div');
+    wrap.className = 'turn turn-heard';
+
+    const tag = document.createElement('div');
+    tag.className = 'heard-tag';
+    tag.innerHTML = icon('volume-2', { size: 12 });
+    const label = document.createElement('span');
+    label.textContent = 'System audio';
+    tag.appendChild(label);
+
+    const when = new Date(h.to || h.ts || Date.now())
+      .toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const meta = document.createElement('span');
+    meta.className = 'heard-meta';
+    meta.textContent = when;
+    tag.appendChild(meta);
+
+    const el = document.createElement('div');
+    el.className = 'heard';
+    el.textContent = text;      // transcript, not markdown: it is speech, verbatim
+
+    wrap.appendChild(tag);
+    wrap.appendChild(el);
+    attachCopy(wrap, () => text);
+
+    const atBottom = messages.scrollHeight - messages.scrollTop - messages.clientHeight < 60;
+    messages.appendChild(wrap);
+    if (atBottom) messages.scrollTop = messages.scrollHeight;
+    reportSize();
+  }
+
+  /**
+   * The user's own speech, staged in the composer rather than sent.
+   *
+   * Appended to whatever is already typed, so dictating in pieces works and so
+   * half-written text is never destroyed by something the mic picked up. The
+   * caret lands at the end and the box takes focus: the next thing the user
+   * does is either press Enter or fix a word, and both need it focused.
+   */
+  let stageFlash = null;
+  function stageTranscript(text) {
+    const t = String(text || '').trim();
+    if (!t) return;
+    const cur = input.value;
+    const sep = !cur ? '' : (/\s$/.test(cur) ? '' : ' ');
+    input.value = cur + sep + t;
+    syncPlaceholder();
+    input.focus();
+    input.setSelectionRange(input.value.length, input.value.length);
+    composer.classList.add('staged');
+    clearTimeout(stageFlash);
+    stageFlash = setTimeout(() => composer.classList.remove('staged'), 900);
   }
 
   /**
@@ -681,7 +826,9 @@
     $('#convo-title').textContent = (s && s.title) || 'New conversation';
     for (const m of ((s && s.messages) || [])) {
       if (m.role === 'user') addUser(m.content);
-      else if (m.role === 'note') {
+      else if (m.role === 'heard') {
+        addHeard({ text: m.content, from: m.from, to: m.to || m.ts, ts: m.ts });
+      } else if (m.role === 'note') {
         addDigest({ text: m.content, gist: m.gist, kind: m.kind, from: m.from, to: m.to || m.ts });
       } else if (m.role === 'summary') {
         addFold(m);
@@ -1086,7 +1233,11 @@
     $('#f-stt-url').value = stt.localBaseURL || '';
     $('#f-stt-model').value = stt.provider === 'local' ? (stt.localModel || '') : (stt.remoteModel || '');
     $('#f-target-lang').value = stt.targetLang || 'English';
+    $('#f-stt-tochat').checked = stt.toChat !== false;
     syncSttRows();
+    // Asks the main process what the engine is doing right now, so the pane
+    // never shows a build that failed to install as though it were running.
+    refreshEngine().catch(() => {});
 
     const a = settings.audio || {};
     $('#f-system-audio').checked = a.captureSystem !== false;
@@ -1147,6 +1298,9 @@
     $('#row-stt-url').classList.toggle('hidden', mode !== 'local');
     $('#row-stt-model').classList.toggle('hidden', mode === 'off' || mode === 'gemini');
     $('#row-target-lang').classList.toggle('hidden', mode === 'off');
+    // Nimbus only manages a server for the local engine; with OpenAI or Gemini
+    // selected there is nothing on this machine to install.
+    $('#group-engine').classList.toggle('hidden', mode !== 'local');
     reportSize();
   }
 
@@ -1430,6 +1584,107 @@
     settings.stt = Object.assign({}, settings.stt, patch);
     await app.settingsSet({ stt: settings.stt });
   }));
+  // ---- the managed local engine --------------------------------------------
+  /**
+   * Three facts, kept apart on screen.
+   *
+   * What the hardware probe found, what was asked for, and what the server is
+   * actually running are not the same thing: an asset can be missing upstream,
+   * or an accelerated build can start and quietly fall back to CPU when its
+   * backend fails to bind a device. Collapsing them into one "GPU: yes" line
+   * is how a user ends up believing in an acceleration they never got.
+   */
+  let engineOptions = null;
+
+  function fillSelect(sel, items, extra) {
+    sel.innerHTML = '';
+    for (const o of [extra].concat(items).filter(Boolean)) {
+      const el = document.createElement('option');
+      el.value = o.id;
+      el.textContent = o.label + (o.approxMB ? ' — ' + (o.approxMB >= 1024
+        ? (o.approxMB / 1024).toFixed(1) + ' GB' : o.approxMB + ' MB') : '');
+      if (o.note) el.title = o.note;
+      sel.appendChild(el);
+    }
+  }
+
+  function engineLine(s) {
+    if (!s) return '';
+    if (s.phase === 'ready') {
+      const how = s.accel ? ('GPU · ' + (s.device || s.build)) : 'CPU';
+      return 'Running the ' + s.build + ' build on ' + how + ', at ' + s.endpoint + '.';
+    }
+    if (s.phase === 'error') return s.message || 'The engine failed.';
+    if (s.message) return s.message;
+    return s.phase === 'idle' ? 'Not running.' : s.phase + '…';
+  }
+
+  function paintEngine(s) {
+    $('#engine-status').textContent = engineLine(s);
+    const bar = $('#engine-bar');
+    const p = s && s.progress;
+    bar.classList.toggle('hidden', !p);
+    if (p) bar.querySelector('i').style.width = Math.round(100 * p.done / (p.total || p.done || 1)) + '%';
+    reportSize();
+  }
+
+  async function refreshEngine() {
+    const info = await app.engineStatus();
+    engineOptions = info.options;
+    const cfg = (settings.stt || {}).engine || {};
+    fillSelect($('#f-engine-build'), info.options.builds,
+      { id: 'auto', label: 'Automatic' + (info.decision ? ' (' + info.decision.build + ')' : '') });
+    fillSelect($('#f-engine-model'), info.options.models,
+      { id: 'auto', label: 'Automatic' + (info.decision ? ' (' + info.decision.modelTier + ')' : '') });
+    $('#f-engine-build').value = cfg.build || 'auto';
+    $('#f-engine-model').value = cfg.model || 'auto';
+    $('#f-engine-manage').checked = cfg.manage !== false;
+    $('#engine-hw').textContent = info.hardware || 'not probed yet';
+    const on = cfg.manage !== false;
+    ['#row-engine-hw', '#row-engine-build', '#row-engine-model', '#row-engine-actions']
+      .forEach((sel) => $(sel).classList.toggle('hidden', !on));
+    paintEngine(info.status);
+  }
+
+  app.on('stt:engine', (s) => paintEngine(s));
+
+  $('#f-engine-manage').addEventListener('change', async () => {
+    const engine = Object.assign({}, (settings.stt || {}).engine, { manage: $('#f-engine-manage').checked });
+    settings.stt = Object.assign({}, settings.stt, { engine });
+    await app.settingsSet({ stt: { engine } });
+    await refreshEngine();
+  });
+
+  ['#f-engine-build', '#f-engine-model'].forEach((sel) => $(sel).addEventListener('change', async () => {
+    const engine = Object.assign({}, (settings.stt || {}).engine, {
+      build: $('#f-engine-build').value,
+      model: $('#f-engine-model').value
+    });
+    settings.stt = Object.assign({}, settings.stt, { engine });
+    // Saved, not installed: switching build is a download, so it waits for the button.
+    await app.settingsSet({ stt: { engine } });
+  }));
+
+  $('#engine-install').addEventListener('click', async () => {
+    $('#engine-status').textContent = 'Working…';
+    try {
+      const s = await app.engineInstall({
+        build: $('#f-engine-build').value,
+        model: $('#f-engine-model').value
+      });
+      paintEngine(s);
+    } catch (e) {
+      $('#engine-status').textContent = (e && e.message) || String(e);
+    }
+    reportSize();
+  });
+
+  $('#engine-reprobe').addEventListener('click', async () => {
+    $('#engine-hw').textContent = 'Scanning…';
+    await app.engineProbe();
+    await refreshEngine();
+  });
+
   $('#f-target-lang').addEventListener('blur', async () => {
     const v = $('#f-target-lang').value.trim() || 'English';
     $('#f-target-lang').value = v;
@@ -1565,6 +1820,10 @@
     syncDigestRows();
     settings.audio = Object.assign({}, settings.audio, { digestCeilingMs: v });
     await app.settingsSet({ audio: settings.audio });
+  });
+  $('#f-stt-tochat').addEventListener('change', async () => {
+    settings.stt = Object.assign({}, settings.stt, { toChat: $('#f-stt-tochat').checked });
+    await app.settingsSet({ stt: settings.stt });
   });
   $('#f-listen-launch').addEventListener('change', async () => {
     settings.audio = Object.assign({}, settings.audio, { listenOnLaunch: $('#f-listen-launch').checked });
@@ -1856,6 +2115,8 @@
   });
   app.on('status', ({ message, level }) => showNotice(message, level || 'info'));
   app.on('audio:digest', (d) => addDigest(d));
+  app.on('transcript:heard', (h) => addHeard(h));
+  app.on('transcript:stage', ({ text }) => stageTranscript(text));
   app.on('settings:changed', (s) => { settings = s; refreshModelChip(); });
   app.on('context:usage', (c) => paintContext(c));
   app.on('compact:state', (s) => { compacting = !!(s && s.active); paintCompactBtn(); });

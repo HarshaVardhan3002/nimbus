@@ -139,15 +139,31 @@ Settings show what is needed to get running. **Show advanced settings**, at the 
 
 **Test connection** under Models answers the only question that matters after editing an endpoint: will this provider actually work? It checks that the server is reachable, that the key is accepted, that the model name exists on that server, and that a real generation streams back — then reports the reply, total latency, and time to first token. A provider that connects but returns nothing usable (for example a reasoning model that spends the whole token budget thinking) is reported as a warning with the specific cause, not as a success.
 
-### Speech-to-text (optional)
+### Speech-to-text
 
-Speech transcription is deliberately separate from chat-model configuration. The default local setting expects any service that implements OpenAI's transcription route:
+Speech transcription is deliberately separate from chat-model configuration, and out of the box it needs no setup at all: Nimbus runs Whisper itself, locally.
+
+Nothing is bundled. The installer checks the machine — RAM, graphics vendor, video memory, integrated versus discrete — and on first launch Nimbus downloads the transcription build that matches it along with a model sized to the memory available:
+
+| Hardware | Build | Backend |
+| --- | --- | --- |
+| NVIDIA GPU | CUDA | whisper.cpp cuBLAS release |
+| Discrete AMD GPU | ROCm | HIP backend, falls back to Vulkan |
+| AMD or Intel integrated graphics | Vulkan | vendor-neutral GPU compute |
+| Older machines, or under 8 GB of RAM | CPU | OpenBLAS |
+
+Models follow the same rule: `large-v3-turbo` on a discrete card, its q5 quantisation on integrated graphics and on CPU, and progressively smaller weights on machines with little memory. Everything is cached under the app's data directory, so this is a first-run cost only.
+
+Settings › Voice › **Local engine** shows what was detected and what is actually running — including whether the GPU backend genuinely bound to a device, which is not the same question as which build was installed. Any build and any model can be selected by hand; the automatic choice is a starting point, not a lock.
+
+Turn **Let Nimbus run Whisper for me** off to keep using your own server instead. Both wire formats are spoken, so faster-whisper-server, Speaches, LM Studio and whisper.cpp's own server all work:
 
 ```text
 POST http://127.0.0.1:8000/v1/audio/transcriptions
+POST http://127.0.0.1:8081/inference
 ```
 
-Point Settings at a compatible local server such as faster-whisper-server, whisper.cpp server, Speaches, or LM Studio, and provide the server's model identifier. Alternatively choose OpenAI Whisper or Gemini in Settings after configuring the respective API key. Set transcription to **Off** if you only want typed and screen-based interactions.
+Alternatively choose OpenAI Whisper or Gemini in Settings after configuring the respective API key. Set transcription to **Off** if you only want typed and screen-based interactions.
 
 ### Choose what Nimbus hears
 

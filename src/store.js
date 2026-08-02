@@ -119,7 +119,40 @@ const DEFAULTS = {
      * default and no control, so translation silently always produced English
      * however the transcript was configured.
      */
-    targetLang: 'English'
+    targetLang: 'English',
+
+    /**
+     * Whether transcription joins the conversation.
+     *
+     * On: system speech is written into the chat as its own kind of turn and
+     * the user's own speech is staged in the composer, unsent. Off: transcripts
+     * only drive the pill and the digest, which is the older behaviour and the
+     * right one for anyone who wants Nimbus listening without it participating.
+     */
+    toChat: true,
+
+    /**
+     * The managed local engine.
+     *
+     * With manage on, Nimbus downloads whisper.cpp and a model on first run,
+     * runs the server on loopback itself and ignores localBaseURL. The build is
+     * chosen from the hardware probe -- CUDA on NVIDIA, ROCm on an AMD card,
+     * Vulkan on integrated graphics, CPU on anything older -- and every one of
+     * those remains selectable by hand, since the probe can only guess at what
+     * a driver will actually do.
+     *
+     * Turn manage off to keep pointing localBaseURL at your own server.
+     */
+    engine: {
+      manage: true,
+      // 'auto' follows the probe; otherwise 'cuda' | 'rocm' | 'vulkan' | 'cpu'
+      build: 'auto',
+      // 'auto' sizes the model to memory; otherwise 'turbo' | 'turbo-q5' | 'small' | 'base'
+      model: 'auto',
+      port: 8081,
+      // 0 means half the cores, which leaves room for the app itself
+      threads: 0
+    }
   },
 
   audio: {
@@ -230,7 +263,8 @@ const DEFAULTS = {
   },
 
   ui: {
-    pillPosition: null,      // { x, y }; null = top centre of primary display
+    // The pill always launches centred on the top edge of the primary display.
+    // A drag moves it for the session and is deliberately not remembered.
     textZoom: 1,
     // 'shaped' | 'acrylic' | 'blur' | 'off'
     //

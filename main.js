@@ -14,10 +14,13 @@ const win32 = require('./src/native/win32');
 const { WindowManager } = require('./src/windows/manager');
 const { captureScreenshot } = require('./src/screen');
 const { createSTT } = require('./src/stt');
+const hardware = require('./src/hardware');
+const { createEngine } = require('./src/whisper/engine');
+const catalog = require('./src/whisper/catalog');
 const { createLLM, testConnection } = require('./src/llm');
 const {
-  MODES, DIGEST, buildDigest, splitDigest,
-  COMPACT, buildCompact, parseCompact, compactPrefill
+  MODES, DIGEST, buildDigest, splitDigest, looksDegenerate,
+  COMPACT, buildCompact, parseCompact, compactPrefill, heardPrefill
 } = require('./src/prompts');
 const { estimateTurns, measureRatio, blendRatio } = require('./src/tokens');
 const { WarmthKeeper } = require('./src/warmth');
@@ -38,6 +41,8 @@ let wm = null;
 let warmth = null;
 let ptt = null;
 let convo = null;     // the conversation currently on screen (Electron owns `session`)
+let engine = null;          // the managed whisper.cpp server, once it exists
+let engineDecision = null;  // what the hardware probe chose, before any override
 
 const state = {
   listening: false,
@@ -72,8 +77,33 @@ const state = {
  */
 const MIC_RELEASE_GRACE_MS = 2500;
 
+/**
+ * The live transcript, kept rolling rather than complete.
+ *
+ * Two bounds, not one. The count cap alone lets a machine left listening
+ * overnight carry hours-old speech into tomorrow's prompt; the age cap alone
+ * lets a loud meeting blow past any reasonable size in minutes. Whichever bites
+ * first wins, and both are cheap because pruning happens on push.
+ *
+ * It is also session-scoped: starting a new conversation or stopping listening
+ * empties it. Recall of anything older is the history database's job, and it
+ * has an index for it -- this array exists only to be fast.
+ */
 const transcript = [];        // { channel, text, ts }
 const MAX_TRANSCRIPT = 400;
+const TRANSCRIPT_TTL_MS = 30 * 60 * 1000;
+
+/**
+ * System speech waiting to be written into the conversation as one turn.
+ *
+ * Utterances arrive every few seconds. Appending each one separately would put
+ * a hundred one-line messages in the chat for a single meeting and spend the
+ * context window on the whitespace between them, so they are gathered and
+ * flushed as a block -- on a pause, on size, or when listening stops.
+ */
+const heardBuf = { parts: [], chars: 0, from: 0, timer: null };
+const HEARD_GAP_MS = 6000;
+const HEARD_MAX_CHARS = 1200;
 
 let sttQueue = Promise.resolve();
 let abortController = null;
@@ -133,7 +163,14 @@ async function runDigest(block) {
   const timer = setTimeout(() => ac.abort(), DIGEST_TIMEOUT_MS);
 
   const system = def.system(targetLang);
-  const prompt = buildDigest({ turns: block.turns, gist: block.gist, targetLang });
+  // Only the modes that actually translate get told about a language. A
+  // summarising model handed an unexplained "Target language:" header continues
+  // it instead of the summary.
+  const prompt = buildDigest({
+    turns: block.turns,
+    gist: block.gist,
+    targetLang: def.wantsLang ? targetLang : null
+  });
 
   let raw = '';
   let usage = null;
@@ -167,6 +204,12 @@ async function runDigest(block) {
   const { gist, body } = splitDigest(raw);
   const text = body || gist;
   if (!text) throw new Error('The model returned an empty digest.');
+  /**
+   * Throwing rather than displaying. The block stays pending and is retried with
+   * whatever has been heard since, so a one-off collapse costs a delay -- where
+   * showing it would also carry its gist into the next block as background.
+   */
+  if (looksDegenerate(text)) throw new Error('The model returned a degenerate digest.');
 
   const entry = {
     seq: block.seq,
@@ -321,6 +364,7 @@ function assembleContext(settings) {
   const out = [];
   for (const t of raw) {
     if (t.role === 'summary') { for (const p of compactPrefill(t.text)) out.push(p); }
+    else if (t.role === 'heard') { for (const p of heardPrefill(t.text)) out.push(p); }
     else out.push(t);
   }
   return out;
@@ -605,10 +649,114 @@ function syncPushToTalk() {
   if (!ptt) return;
   const s = store.getSettings();
   ptt.bind((s.shortcuts || {}).talk || 'Control+Alt+Space');
-  // Poll only when it could matter: listening, and the mic on push-to-talk.
-  if (state.listening && micModeOf() === 'ptt') ptt.start();
+  /**
+   * Polled whenever the mic is on push-to-talk, listening or not.
+   *
+   * It used to also require state.listening, which made the chord a no-op in
+   * exactly the situation people press it in: Nimbus idle, something worth
+   * saying, hold the key and talk. Nothing happened and nothing explained why,
+   * which is what "the shortcut is buggy" actually meant. Holding it now starts
+   * listening (see the onChange wiring in start()) instead of being swallowed.
+   *
+   * The poll is 24ms of GetAsyncKeyState against a couple of virtual keys, so
+   * running it while idle costs nothing measurable.
+   */
+  if (micModeOf() === 'ptt') ptt.start();
   else ptt.stop();
   updateMicGate();
+}
+
+// ---------------------------------------------------------- local engine
+/**
+ * The managed whisper.cpp server.
+ *
+ * Nimbus ships no model and no inference binary: the installer probes the
+ * machine, and on first run the build matching that hardware -- CUDA, ROCm,
+ * Vulkan or plain CPU -- is downloaded along with a model sized to the memory
+ * available. Everything after that is cached, so this is a first-run cost.
+ *
+ * The engine owns its port and reports it back; whenever it is managed and
+ * ready, its endpoint overrides stt.localBaseURL, which is what lets the
+ * transport in src/stt.js stay a dumb HTTP client that knows nothing about
+ * processes.
+ */
+let engineSyncTimer = null;
+
+function engineChoice(settings) {
+  const cfg = (settings && settings.stt) || {};
+  const eng = cfg.engine || {};
+  const auto = engineDecision || {};
+  return {
+    build: eng.build && eng.build !== 'auto' ? eng.build : (auto.build || 'cpu'),
+    modelTier: eng.model && eng.model !== 'auto' ? eng.model : (auto.modelTier || 'base'),
+    language: cfg.language,
+    port: eng.port || 8081,
+    threads: eng.threads || 0
+  };
+}
+
+/**
+ * Settings as the transcriber should see them.
+ *
+ * A managed engine picks its own port -- 8081 may already be taken -- so the
+ * stored base URL is stale by construction and is replaced with the live one.
+ * The model name goes along for the ride because whisper.cpp serves whatever
+ * it was started with and ignores the field entirely.
+ */
+function sttSettings() {
+  const s = store.getSettings();
+  const cfg = s.stt || {};
+  if (!(cfg.engine || {}).manage || !engine) return s;
+  const st = engine.status();
+  if (st.phase !== 'ready' || !st.endpoint) return s;
+  return { ...s, stt: { ...cfg, localBaseURL: st.endpoint, localModel: 'whisper-1' } };
+}
+
+async function startEngine({ force = false, reprobe = false } = {}) {
+  const s = store.getSettings();
+  const cfg = s.stt || {};
+  const managed = (cfg.engine || {}).manage !== false && (cfg.provider || 'local') === 'local';
+
+  if (!managed) {
+    if (engine) engine.stop();
+    return null;
+  }
+
+  if (!engine) {
+    engine = createEngine({
+      userDataDir: app.getPath('userData'),
+      log: (m) => console.log('[nimbus] ' + m)
+    });
+    engine.on((st) => broadcast('stt:engine', st));
+  }
+
+  const report = await hardware.probe({ userDataDir: app.getPath('userData'), force: reprobe });
+  engineDecision = hardware.classify(report);
+  console.log('[nimbus] hardware: ' + hardware.describe(engineDecision));
+
+  try {
+    return await engine.ensure({ ...engineChoice(s), force });
+  } catch (e) {
+    /**
+     * A failed install is reported once and then left alone. It is nearly
+     * always a network problem, and retrying on a timer would mean re-pulling
+     * hundreds of megabytes in the background without being asked.
+     */
+    notify('Could not set up local transcription: ' + ((e && e.message) || e), 'error');
+    return null;
+  }
+}
+
+/**
+ * Re-sync after a settings save, debounced.
+ *
+ * ensure() is a no-op when nothing relevant changed, but the settings sheet
+ * saves on every keystroke, and a half-typed port number should not start a
+ * server on it.
+ */
+function scheduleEngineSync() {
+  clearTimeout(engineSyncTimer);
+  engineSyncTimer = setTimeout(() => { startEngine().catch(() => {}); }, 1500);
 }
 
 // ---------------------------------------------------------------- STT
@@ -627,7 +775,7 @@ function enqueueUtterance(channel, pcm) {
 }
 
 async function transcribeOne(channel, pcm) {
-  const settings = store.getSettings();
+  const settings = sttSettings();
   const stt = createSTT(settings);
   if (!stt.available) return;
 
@@ -653,15 +801,108 @@ async function transcribeOne(channel, pcm) {
   if (!text) return;
 
   const turn = { channel, text, ts: Date.now() };
-  transcript.push(turn);
-  if (transcript.length > MAX_TRANSCRIPT) transcript.splice(0, transcript.length - MAX_TRANSCRIPT);
+  pushTranscript(turn);
   broadcast('transcript', turn);
   log('transcript', channel, text);
 
   // Heard audio now has somewhere to go. Ignores the 'you' channel; see digest.js.
   digest.push(turn);
 
+  /**
+   * Transcription is a way of talking to the model, so it lands in the
+   * conversation rather than in the margin beside it. The two channels are not
+   * the same act and do not go to the same place:
+   *
+   *   you    the user talking. Staged in the composer, unsent. Recognition is
+   *          wrong often enough that auto-sending would mean arguing with the
+   *          model about words nobody said, so Enter stays in the user's hands.
+   *   them   everyone else. Written into the chat as its own kind of turn,
+   *          tagged so the model reads it as overheard rather than addressed.
+   *
+   * Digests keep running alongside this. They are the compressed record of a
+   * long session, not the live channel, and the pill is where they belong.
+   */
+  if (channel === 'you') stageForUser(text, turn.ts);
+  else if (transcriptToChat()) pushHeard(turn);
+
   maybeWake(text, channel);
+}
+
+/**
+ * Put the user's own words in the composer, where the Enter key is.
+ *
+ * The panel is opened first if it was closed. Text staged into a hidden window
+ * is text the user cannot read, edit or send, and they just held a key down and
+ * spoke -- they are asking for the composer whether or not it is on screen.
+ *
+ * Focused, because the next action is Enter or a correction and both need it.
+ */
+function stageForUser(text, ts) {
+  if (!transcriptToChat()) return;
+  if (wm && !wm.panelOpen) wm.openPanel({ focus: true });
+  toPanel('transcript:stage', { text, ts });
+}
+
+/** Append to the live transcript, dropping whatever is too old or too much. */
+function pushTranscript(turn) {
+  transcript.push(turn);
+  const cutoff = turn.ts - TRANSCRIPT_TTL_MS;
+  let stale = 0;
+  while (stale < transcript.length && transcript[stale].ts < cutoff) stale++;
+  const over = transcript.length - MAX_TRANSCRIPT;
+  const drop = Math.max(stale, over);
+  if (drop > 0) transcript.splice(0, drop);
+}
+
+/** Empty the live transcript and anything staged from it. Session boundaries. */
+function resetTranscript() {
+  transcript.length = 0;
+  flushHeard('reset');
+}
+
+function transcriptToChat() {
+  const s = store.getSettings().stt || {};
+  return s.toChat !== false;
+}
+
+// ------------------------------------------------------- heard, into the chat
+function pushHeard(turn) {
+  if (!heardBuf.parts.length) heardBuf.from = turn.ts;
+  heardBuf.parts.push(turn.text);
+  heardBuf.chars += turn.text.length + 1;
+  heardBuf.to = turn.ts;
+
+  if (heardBuf.chars >= HEARD_MAX_CHARS) { flushHeard('size'); return; }
+
+  if (heardBuf.timer) clearTimeout(heardBuf.timer);
+  heardBuf.timer = setTimeout(() => flushHeard('pause'), HEARD_GAP_MS);
+  if (heardBuf.timer.unref) heardBuf.timer.unref();
+}
+
+/**
+ * Write the gathered system speech into the conversation as one turn.
+ *
+ * 'reset' discards instead of writing: it fires when the session is being torn
+ * down or replaced, and the block belongs to the conversation that is ending,
+ * not the one starting.
+ */
+function flushHeard(reason) {
+  if (heardBuf.timer) { clearTimeout(heardBuf.timer); heardBuf.timer = null; }
+  const parts = heardBuf.parts.splice(0, heardBuf.parts.length);
+  const from = heardBuf.from;
+  const to = heardBuf.to;
+  heardBuf.chars = 0;
+  if (!parts.length || reason === 'reset') return;
+
+  const text = parts.join(' ');
+  if (!convo) convo = history.create('Audio session');
+  history.append(convo, 'heard', text, { channel: 'them', from, to });
+  if (history.save(convo)) broadcast('history:changed', { id: convo.id, title: convo.title });
+
+  const entry = { text, from, to, reason, ts: Date.now() };
+  toPanel('transcript:heard', entry);
+  pushContext();
+  log('[heard] ' + parts.length + ' utterance(s), ' + text.length + ' chars (' + reason + ')');
 }
 
 /**
@@ -983,6 +1224,8 @@ function registerIPC() {
     // The mic mode and the talk chord both live in settings, so every save is a
     // chance that the gate's inputs just changed underneath it.
     syncPushToTalk();
+    // A changed engine build, model, port or language means a different server.
+    if (patch && patch.stt) scheduleEngineSync();
     broadcast('settings:changed', next);
     // The route, the reply budget and a manual window override all live in
     // settings, so any save can change what the bar should read.
@@ -1096,6 +1339,55 @@ function registerIPC() {
     };
     return providers.discoverModels(shim, '__stt__');
   });
+
+  /**
+   * The managed engine, for the Settings pane.
+   *
+   * Reports three separate things on purpose: what the hardware probe found,
+   * what is installed on disk, and what the running server is actually doing.
+   * They disagree in the cases that matter -- a machine that probed as CUDA but
+   * fell back to Vulkan because the asset was missing, or an accelerated build
+   * that started but whose backend never bound to a device.
+   */
+  ipcMain.handle('engine:status', async () => {
+    const s = store.getSettings();
+    return {
+      status: engine ? engine.status() : { phase: 'idle', running: false },
+      decision: engineDecision,
+      hardware: engineDecision ? hardware.describe(engineDecision) : '',
+      choice: engineChoice(s),
+      installed: engine ? await engine.installed() : { builds: [], models: [], saved: {} },
+      options: catalog.options()
+    };
+  });
+
+  /**
+   * Install, switch or repair.
+   *
+   * Any build stays selectable whatever the probe decided: driver quirks are
+   * real, and the person at the keyboard can see benchmarks we cannot.
+   */
+  ipcMain.handle('engine:install', async (_e, opts) => {
+    const patch = {};
+    if (opts && opts.build) patch.build = opts.build;
+    if (opts && opts.model) patch.model = opts.model;
+    if (Object.keys(patch).length) store.setSettings({ stt: { engine: patch } });
+    clearTimeout(engineSyncTimer);
+    const st = await startEngine({ force: true, reprobe: !!(opts && opts.reprobe) });
+    return st || (engine ? engine.status() : null);
+  });
+
+  ipcMain.handle('engine:stop', () => {
+    if (engine) engine.stop();
+    return engine ? engine.status() : null;
+  });
+
+  /** Re-run the hardware probe: a card can be swapped in after install. */
+  ipcMain.handle('engine:probe', async () => {
+    const report = await hardware.probe({ userDataDir: app.getPath('userData'), force: true });
+    engineDecision = hardware.classify(report);
+    return { decision: engineDecision, hardware: hardware.describe(engineDecision) };
+  });
   /**
    * Build identity.
    *
@@ -1127,10 +1419,13 @@ function registerIPC() {
   ipcMain.handle('history:rename', (_e, id, title) => history.rename(id, title));
   ipcMain.handle('history:load', (_e, id) => {
     const s = history.load(id);
-    if (s) { convo = s; state.advisedFull = false; broadcast('history:opened', s); pushContext(); }
+    // The live transcript belongs to the session it was heard in. Carrying it
+    // across would file this meeting's audio under last week's conversation.
+    if (s) { resetTranscript(); convo = s; state.advisedFull = false; broadcast('history:opened', s); pushContext(); }
     return s;
   });
   ipcMain.handle('history:new', () => {
+    resetTranscript();
     convo = null;     // created lazily on the next message, so empty sessions never persist
     state.advisedFull = false;
     broadcast('history:opened', { id: null, title: 'New conversation', messages: [] });
@@ -1245,6 +1540,16 @@ function registerIPC() {
     enqueueUtterance(channel, Buffer.from(buffer));
   });
 
+  /**
+   * The VAD saying whether a channel is live, so the digest can tell a pause in
+   * the audio from a gap between transcriptions. Cheap and frequent: no work is
+   * done here beyond handing it on.
+   */
+  ipcMain.on('audio:speech', (_e, p) => {
+    if (!state.listening || !p) return;
+    digest.speech(p.channel, p.active);
+  });
+
   ipcMain.on('listen:state', (_e, active) => {
     state.listening = !!active;
     // A turn is now imminent; make sure the model is resident before the user
@@ -1255,6 +1560,10 @@ function registerIPC() {
       state.sttMuted = false;
       state.keyHeld = false;
       state.buttonHeld = false;
+      // Written, not discarded: it was genuinely heard, and a block held back
+      // because the user stopped listening mid-sentence is the one most likely
+      // to matter.
+      flushHeard('stop');
     }
     // Turning listening off flushes whatever was heard last, which is usually
     // the part of a meeting worth having written up.
@@ -1364,10 +1673,16 @@ app.whenReady().then(() => {
   wm = new WindowManager({
     stealth: !!((store.getSettings().ui || {}).privacy),
     onEvent: (channel, data) => {
-      if (channel === 'pill:moved') {
-        store.setSettings({ ui: { pillPosition: { x: data.x, y: data.y } } });
-        return;
-      }
+      /**
+       * A drag moves the pill for this session only.
+       *
+       * Persisting it is what put the pill off-centre on every launch after the
+       * first: one nudge and Nimbus reopened there forever, on whichever
+       * display and at whichever offset, with nothing on screen explaining why.
+       * It now always opens centred on the top edge, and dragging is a
+       * temporary "get out of the way" rather than a preference.
+       */
+      if (channel === 'pill:moved') return;
       broadcast(channel, data);
     }
   }).create();
@@ -1375,8 +1690,13 @@ app.whenReady().then(() => {
   const ui0 = store.getSettings().ui || {};
   if (ui0.glass) wm.glassMode = ui0.glass;
 
-  const saved = ui0.pillPosition;
-  if (saved) setTimeout(() => wm.restorePosition(saved), 120);
+  /**
+   * Re-centre once the renderer has reported its real width.
+   *
+   * create() can only centre the seed size, and the pill is narrower than the
+   * seed, so the launch position was always off by half the difference.
+   */
+  setTimeout(() => wm.centerPill(), 300);
 
   warmth = new WarmthKeeper({
     getSettings: () => store.getSettings(),
@@ -1385,7 +1705,20 @@ app.whenReady().then(() => {
   if ((store.getSettings().warmth || {}).enabled !== false) warmth.start();
 
   ptt = new PushToTalk({
-    onChange: (down) => { state.keyHeld = down; updateMicGate(); }
+    onChange: (down) => {
+      state.keyHeld = down;
+      /**
+       * Holding the talk key while idle turns listening on rather than doing
+       * nothing. The renderer owns the capture devices, so this asks rather
+       * than sets; it comes back as listen:state, which calls syncPushToTalk,
+       * which opens the gate with keyHeld still true.
+       *
+       * The pre-roll buffer in the worklet covers the round trip, so the first
+       * word survives the delay instead of being clipped.
+       */
+      if (down && !state.listening) broadcast('listen:request', {});
+      updateMicGate();
+    }
   });
   syncPushToTalk();
 
@@ -1397,6 +1730,9 @@ app.whenReady().then(() => {
   const onDisplayChange = () => {
     if (!wm) return;
     wm.refreshRegions();
+    // Docking a laptop or changing resolution moves the midpoint of the top
+    // edge, so the anchor has to be recomputed, not just the regions.
+    wm.centerPill();
     wm.broadcast('display:changed', { availableHeight: wm.availableHeight() });
   };
   screen.on('display-metrics-changed', onDisplayChange);
@@ -1404,11 +1740,24 @@ app.whenReady().then(() => {
   screen.on('display-removed', onDisplayChange);
 
   app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) wm.create(); });
+
+  /**
+   * Set up local transcription in the background.
+   *
+   * Deferred rather than awaited: on a first run this downloads a build and a
+   * model, and the app has to be usable -- and its progress visible -- while
+   * that happens. Every later launch finds both on disk and only starts the
+   * server, which is a couple of seconds.
+   */
+  setTimeout(() => { startEngine().catch(() => {}); }, 2000);
 });
 
 app.on('will-quit', () => {
   if (warmth) warmth.stop();
   if (ptt) ptt.stop();
+  // The server is our child process: leaving it running would hold the port and
+  // a model's worth of memory after Nimbus is gone.
+  if (engine) engine.stop();
   digest.stop();
   globalShortcut.unregisterAll();
   store.flush();          // debounced writes must not be lost on exit

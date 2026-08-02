@@ -207,6 +207,73 @@ body { width: 100%; }
 .digest .copy-btn { right: -2px; }
 .digest:hover .copy-btn { opacity: 1; pointer-events: auto; }
 
+/**
+ * System audio, as a turn.
+ *
+ * The opposite call from .digest, for the opposite reason. A digest is a
+ * summary nobody asked for and the model never reads; this is verbatim speech
+ * that IS in the prompt, so hiding it in the margin would misrepresent the
+ * context the assistant is answering from.
+ *
+ * It still must not read as the user's own turn: no bubble, an attribution
+ * line, and a muted edge in a colour the user's messages never use. Speech is
+ * shown whole rather than clamped -- a truncated transcript with the model
+ * reading the untruncated version is the exact confusion this is avoiding.
+ */
+.turn-heard {
+  position: relative;
+  margin: 6px 0;
+  padding: 2px 0 2px 9px;
+  border-left: 2px solid var(--stroke-rim);
+  animation: riseIn 220ms var(--ease-decel) both;
+}
+.heard-tag {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 3px;
+  color: var(--tx-mut);
+  font-size: calc(11px * var(--text-zoom));
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  user-select: none;
+}
+.heard-meta {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+  text-transform: none;
+  letter-spacing: 0;
+}
+.heard {
+  color: var(--tx-2);
+  font-size: calc(13.5px * var(--text-zoom));
+  line-height: 1.5;
+  white-space: pre-wrap;
+  -webkit-user-select: text;
+  user-select: text;
+}
+.turn-heard .copy-btn { right: -2px; }
+.turn-heard:hover .copy-btn { opacity: 1; pointer-events: auto; }
+
+/**
+ * Maths.
+ *
+ * KaTeX ships its own colour and sizing, both of which fight the chat. Colour
+ * is inherited so a formula reads as part of the sentence containing it rather
+ * than as a pasted image, and display maths scrolls inside its own box: the
+ * panel is 640 DIP at most and a wide derivation would otherwise force the
+ * whole window to scroll sideways.
+ */
+.katex { color: inherit; font-size: 1.08em; }
+.katex-display {
+  margin: 10px 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 2px 0;
+}
+/* KaTeX's own error colour is tuned for white paper and vanishes on glass. */
+.katex .katex-error { color: var(--danger); }
+
 /* Tokens fade in as they stream rather than appearing as a hard block. */
 .tok { animation: tokIn 200ms var(--ease-decel) both; }
 @keyframes tokIn { from { opacity: 0; } to { opacity: 1; } }
@@ -330,6 +397,18 @@ body { width: 100%; }
   border-color: rgba(76,194,255,0.45);
   /* Windows 11 focus treatment: a thicker accent underline, not a glow ring. */
   box-shadow: inset 0 -2px 0 var(--accent);
+}
+/**
+ * Dictation just landed in the box.
+ *
+ * Staged text arrives under the caret without the user having typed it, and the
+ * next keystroke is likely to be Enter. A brief edge is the difference between
+ * reading it first and sending whatever the recogniser thought it heard. After
+ * .focused so it wins: staging also focuses, so both classes are always on.
+ */
+#composer.staged {
+  border-color: var(--accent-soft);
+  box-shadow: inset 0 -2px 0 var(--accent-soft);
 }
 
 #input-area { position: relative; min-height: 21px; }

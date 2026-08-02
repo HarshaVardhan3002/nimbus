@@ -38,7 +38,18 @@ const PILL = { w: 232, h: 40, radius: 20 };
 // window is hidden at rest, so the clamp is never visible.
 const PANEL = { w: 640, h: 320, radius: 22, minH: 2 };
 const GAP = 10;          // vertical space between pill and panel
-const TOP_MARGIN = 12;
+/**
+ * Flush with the top of the work area, not floating below it.
+ *
+ * The pill is meant to read as part of the bezel -- an extension of the
+ * hardware rather than a window someone left open. A gap of any size breaks
+ * that: it becomes an object with a shadow on all four sides, and the eye
+ * places it in front of the desktop instead of on the edge of the screen.
+ *
+ * Measured from the WORK area, so a taskbar docked to the top pushes it down
+ * rather than being covered by it.
+ */
+const TOP_MARGIN = 0;
 // Kept clear of every work-area edge so the panel never sits flush against a
 // taskbar or a display seam.
 const EDGE_MARGIN = 8;
@@ -745,14 +756,26 @@ class WindowManager {
     if (this.panel && !this.panel.isDestroyed()) this.panel.webContents.send(channel, data);
   }
 
-  restorePosition(pos) {
-    if (!pos || !this.pill || this.pill.isDestroyed()) return;
+  /**
+   * Put the pill back on the top edge, horizontally centred.
+   *
+   * Centred from the CURRENT measured width, which is the part the old launch
+   * path got wrong: create() has to place the window before the renderer
+   * exists, so it centres the 232 DIP seed. Once the real width is known the
+   * midpoint has moved, and while setPillSize() preserves the centre it cannot
+   * recover a centre that was never right -- a restored drag position, or a
+   * display that changed size underneath it.
+   *
+   * Uses the primary display's work area. "Top centre" means the screen the
+   * user thinks of as theirs, not whichever one the pill happened to end up on.
+   */
+  centerPill() {
+    if (!this.pill || this.pill.isDestroyed()) return;
+    const wa = screen.getPrimaryDisplay().workArea;
     const w = this.pillSize.w;
     const h = this.pillSize.h;
-    const wa = screen.getDisplayNearestPoint({ x: pos.x, y: pos.y }).workArea;
-    const x = Math.max(wa.x, Math.min(pos.x, wa.x + wa.width - w));
-    const y = Math.max(wa.y, Math.min(pos.y, wa.y + wa.height - h));
-    this._place(this.pill, x, y, w, h);
+    const x = Math.round(wa.x + (wa.width - w) / 2);
+    this._place(this.pill, x, wa.y + TOP_MARGIN, w, h);
     this._repositionPanel();
   }
 

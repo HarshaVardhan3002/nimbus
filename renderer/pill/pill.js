@@ -173,10 +173,13 @@
     return {
       onUtterance: (channel, buffer, durationMs) => app.utterance({ channel, durationMs }, buffer),
       onLevel: (_c, rms) => { if (listening) renderLevel(rms); },
-      onSpeech: (_c, active) => {
+      onSpeech: (channel, active) => {
         clearTimeout(speechTimer);
         if (active) document.body.classList.add('speech');
         else speechTimer = setTimeout(() => document.body.classList.remove('speech'), 240);
+        // The digest decides where a block ends from this, not from when the
+        // last utterance happened to finish transcribing.
+        app.speech(channel, active);
       }
     };
   }
