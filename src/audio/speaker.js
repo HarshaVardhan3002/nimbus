@@ -9,7 +9,7 @@
  *     -> owner / other / uncertain
  *
  * This is VERIFICATION (one enrolled identity, binary decision), not
- * diarization. It answers "is this Harsha" and deliberately does not try to
+ * diarization. It answers "is this the enrolled owner" and does not try to
  * answer "how many people are in the room", because clustering unknown speakers
  * online drifts badly over a long session.
  *

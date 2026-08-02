@@ -111,12 +111,10 @@ async function timeLLM(model, prompt) {
 
   console.log('\n=== 3. LLM time-to-first-token ===');
   const prompt = 'Reply in one short sentence: what is the capital of France?';
-  for (const m of [
-    'qwen3.5-2b-FLM',
-    'qwen3.5-4b-FLM',
-    'academiccloud.qwen3.6-27b',
-    'academiccloud.deepseek-v4-flash'
-  ]) await timeLLM(m, prompt);
+  // Override with NIMBUS_BENCH_MODELS="local-model,cloud-model" to measure your own.
+  const models = (process.env.NIMBUS_BENCH_MODELS || 'qwen3.5-2b-FLM,qwen3.5-4b-FLM')
+    .split(',').map((s) => s.trim()).filter(Boolean);
+  for (const m of models) await timeLLM(m, prompt);
 
   console.log('\n=== 4. BUDGET (VAD hangover 550ms + STT + verify + TTFT) ===');
   console.log('  numbers above; see summary.');

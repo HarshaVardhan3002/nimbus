@@ -552,7 +552,7 @@ model size or vendor claims.
 | STT — server Whisper-Large-v3, 2s audio | 2.5–5.6s | 2.5–5.6s (no warm benefit) |
 | Speaker verification — CAM++ in-process | — | **12–44ms** |
 | LLM first token — `qwen3.5-2b-FLM` | 7487ms | **622ms** |
-| LLM first token — `academiccloud.deepseek-v4-flash` (cloud) | 2746ms | 2746ms |
+| LLM first token — `deepseek-v4-flash` on a hosted OpenAI-compatible endpoint | 2746ms | 2746ms |
 
 ### 9.2 Local models are not slow, they are cold
 

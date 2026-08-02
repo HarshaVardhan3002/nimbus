@@ -29,7 +29,7 @@ function stripDataUrl(dataUrl) {
  * real one observed here (Lemonade proxying a cloud backend) answers
  * `200 OK` and then writes this as the first and only SSE frame:
  *
- *   data: {"error":{"message":"cloud (academiccloud) request failed",
+ *   data: {"error":{"message":"cloud (upstream) request failed",
  *                   "status_code":400,"type":"backend_error"}}
  *
  * The SDK does not throw for that -- there is nothing to throw about, the
@@ -103,7 +103,7 @@ function looksLikeVisionRejection(err) {
  * A reasoning model streams its scratchpad in a delta field that is NOT
  * `content`, and there is no agreed name for it:
  *
- *   vLLM / Academic Cloud / DeepSeek   delta.reasoning
+ *   vLLM / DeepSeek                    delta.reasoning
  *   OpenRouter / Fireworks / others    delta.reasoning_content
  *   a few servers                      delta.thinking
  *

@@ -353,7 +353,7 @@ const EMBED_NAME = /embed|bge-|gte-|e5-|nomic-embed|rerank/i;
  * Declared input/output modalities, which several servers state outright even
  * when they publish no `labels` array:
  *
- *   Academic Cloud / vLLM  input: ["text","image"]  output: ["text","thought"]
+ *   vLLM                   input: ["text","image"]  output: ["text","thought"]
  *   OpenRouter             architecture.input_modalities / output_modalities
  *   others                 modalities: { input: [...], output: [...] }
  *
