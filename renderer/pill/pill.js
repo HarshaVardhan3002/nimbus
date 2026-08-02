@@ -193,6 +193,24 @@
   menu.addEventListener('click', (e) => e.stopPropagation());
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape') openMenu(false); });
 
+  /**
+   * There is no click-outside to hear any more.
+   *
+   * The pill never takes the foreground -- that is the point, it must not pull
+   * the caret out of whatever the user is typing in -- so it gets no blur event
+   * and no keystrokes when the attention moves elsewhere. A menu left open
+   * would sit there until they came back and clicked the pill again. The
+   * pointer leaving is the honest signal that they have moved on; the delay
+   * covers the gap between the pill and the menu, which is not part of the
+   * window and so reads as a leave on the way past.
+   */
+  let leaveTimer = 0;
+  document.documentElement.addEventListener('mouseleave', () => {
+    clearTimeout(leaveTimer);
+    if (menu.classList.contains('open')) leaveTimer = setTimeout(() => openMenu(false), 900);
+  });
+  document.documentElement.addEventListener('mouseenter', () => clearTimeout(leaveTimer));
+
   $('#m-listen').addEventListener('click', () => { openMenu(false); listening ? stopListening() : startListening(); });
   $('#m-settings').addEventListener('click', () => { openMenu(false); app.openSettings(); });
   $('#m-quit').addEventListener('click', () => app.quit());
@@ -251,7 +269,16 @@
   }
 
   listenBtn.addEventListener('click', () => (listening ? stopListening() : startListening()));
-  toggleBtn.addEventListener('click', () => app.togglePanel({ focus: true }));
+  /**
+   * Opened without taking the keyboard.
+   *
+   * This used to ask for focus, which meant showing the conversation cost the
+   * user the caret in whatever they were working in -- the panel is mostly read
+   * from, and clicking the composer asks for focus by itself when they do want
+   * to type. The summon shortcut still opens it focused, because pressing that
+   * IS the request to type.
+   */
+  toggleBtn.addEventListener('click', () => app.togglePanel({}));
 
   /**
    * Hold the button to talk.

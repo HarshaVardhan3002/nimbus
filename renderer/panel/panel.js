@@ -394,7 +394,9 @@
     const sep = !cur ? '' : (/\s$/.test(cur) ? '' : ' ');
     input.value = cur + sep + t;
     syncPlaceholder();
-    input.focus();
+    // Speech lands in the composer ready to send, so this is one of the few
+    // places that takes the keyboard without the user pointing at anything.
+    claimInput(input);
     input.setSelectionRange(input.value.length, input.value.length);
     composer.classList.add('staged');
     clearTimeout(stageFlash);
@@ -625,6 +627,70 @@
   input.addEventListener('blur', () => { composer.classList.remove('focused'); syncPlaceholder(); });
   $('#input-area').addEventListener('click', () => input.focus());
 
+  /**
+   * Asking main for the keyboard, only when something is actually typed into.
+   *
+   * The window does not activate on click, so the caret stays wherever the user
+   * left it in whatever they were working in -- an editor keeps its selection,
+   * its completion popup and its undo position while they click around in here.
+   * The cost is that a text field in an unactivated window receives no
+   * keystrokes, so focus has to be asked for explicitly the moment one takes
+   * DOM focus. Escape gives it straight back.
+   *
+   * Delegated on focusin rather than bound per field: settings, history search
+   * and the rename box are all built after this runs, and one of them being
+   * missed reads as a dead keyboard for no visible reason.
+   */
+  const EDITABLE = 'input:not([type=checkbox]):not([type=radio]):not([type=range]), textarea, [contenteditable="true"]';
+
+  /**
+   * pointerdown, not focusin: an unactivated window does not hand DOM focus to
+   * anything, so waiting for a focus event here waits forever. The press is the
+   * only signal that arrives, and the field is focused afterwards -- once main
+   * has actually taken the keyboard and said so.
+   */
+  let wantsFocus = null;
+  document.addEventListener('pointerdown', (e) => {
+    const t = e.target;
+    if (!t || !t.closest) return;
+    const el = t.closest(EDITABLE) || (t.closest('#input-area') ? input : null);
+    if (!el) return;
+    wantsFocus = el;
+    app.requestFocus();
+  }, true);
+
+  /**
+   * Focus a field the code decided to focus, rather than the user's pointer.
+   *
+   * A bare el.focus() is silently ineffective while the window is unactivated,
+   * so anything that opens a field ready to be typed in has to ask for the
+   * keyboard as well.
+   */
+  function claimInput(el) {
+    const target = el || input;
+    wantsFocus = target;
+    app.requestFocus();
+    target.focus();
+  }
+
+  /**
+   * No separate "Nimbus has the keyboard" indicator: DOM focus now exists only
+   * while main has actually taken it, so #composer.focused already says it.
+   */
+  app.on('focus:mode', ({ typing }) => {
+    if (typing) {
+      const el = wantsFocus;
+      wantsFocus = null;
+      if (el && el.isConnected) el.focus();
+      return;
+    }
+    // Focus went back to another window. Anything still holding DOM focus here
+    // would keep drawing a caret that no longer receives anything.
+    wantsFocus = null;
+    const el = document.activeElement;
+    if (el && el !== document.body && el.blur) el.blur();
+  });
+
   function send() {
     const text = input.value.trim();
     if (!text) { runMode('assist', ''); return; }
@@ -750,7 +816,7 @@
     box.value = s.title;
     box.spellcheck = false;
     titleEl.replaceWith(box);
-    box.focus();
+    claimInput(box);
     box.select();
 
     let settled = false;
@@ -902,7 +968,7 @@
     currentId = null;
     $('#convo-title').textContent = 'New conversation';
     showView('chat');
-    input.focus();
+    claimInput(input);
   });
   // Debounced: a query is an IPC round trip plus an index lookup, and typing
   // "screenshot" would otherwise fire ten of them and rebuild the list ten times.
@@ -2224,7 +2290,7 @@
       'info');
     }
   });
-  app.on('panel:focus-input', () => { input.focus(); });
+  app.on('panel:focus-input', () => claimInput(input));
   app.on('open-settings', () => showSettings(true));
   app.on('history:changed', ({ title }) => { if (title) $('#convo-title').textContent = title; });
   app.on('history:opened', (s) => renderSession(s || { messages: [] }));
@@ -2235,6 +2301,21 @@
       // Cancelling the answer outranks closing the panel. Hiding the window
       // while a stream is live left it running, billing and unreadable.
       if (busy) { e.preventDefault(); stop(); return; }
+      /**
+       * The first Escape out of a text field is "give me my caret back".
+       *
+       * It ends input mode and main hands the foreground to the window it was
+       * borrowed from, with the panel left open and untouched -- the whole
+       * point being to get back to what you were typing in without losing the
+       * conversation. A second Escape then closes the panel as it always did.
+       */
+      const el = document.activeElement;
+      if (el && el.matches && el.matches(EDITABLE)) {
+        e.preventDefault();
+        el.blur();
+        app.releaseFocus();
+        return;
+      }
       if (!$('#ctx-pop').classList.contains('hidden')) { e.preventDefault(); toggleContextPop(false); return; }
       if (!$('#view-settings').classList.contains('hidden')) persistProvider().then(() => showView('chat'));
       else if (!$('#view-history').classList.contains('hidden')) showView('chat');

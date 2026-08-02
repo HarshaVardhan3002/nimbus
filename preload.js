@@ -16,6 +16,7 @@ const { contextBridge, ipcRenderer } = require('electron');
  * 'transcript:stage'  the user's own speech, staged in the composer unsent.
  * 'transcript:heard'  system speech, written into the chat as a turn.
  * 'stt:engine'        install progress and health of the managed local engine.
+ * 'focus:mode'        whether the panel currently holds the keyboard.
  */
 const INBOUND = [
   'panel:state',
@@ -38,6 +39,7 @@ const INBOUND = [
   'listen:request',
   'mic:gate',
   'panel:focus-input',
+  'focus:mode',
   'open-settings',
   'display:changed',
   'glass:changed',
@@ -122,6 +124,15 @@ contextBridge.exposeInMainWorld('nimbus', {
   dragStart: () => ipcRenderer.send('ui:drag-start'),
   dragEnd: () => ipcRenderer.send('ui:drag-end'),
   openSettings: () => ipcRenderer.send('ui:open-settings'),
+  /**
+   * Ask for the keyboard, and hand it back.
+   *
+   * The windows do not activate on click, so a text field in the panel is not
+   * typeable until main is told to take focus -- and the window the focus was
+   * borrowed from gets it back on release.
+   */
+  requestFocus: () => ipcRenderer.send('ui:focus-input'),
+  releaseFocus: () => ipcRenderer.send('ui:release-focus'),
   quit: () => ipcRenderer.send('app:quit'),
   // The pill's menu paints outside the pill, so the window must grow to
   // contain it -- the region clip would otherwise slice it off.

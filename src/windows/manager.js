@@ -96,6 +96,16 @@ class WindowManager {
 
     this.panelOpen = false;
     this.menuOpen = false;
+
+    /**
+     * True only while the user is deliberately typing into the panel.
+     *
+     * Outside of it both windows carry WS_EX_NOACTIVATE, so clicking anything
+     * in Nimbus leaves the foreground window -- and the caret in it -- alone.
+     * `prevForeground` is the window that had it, so it can be handed back.
+     */
+    this.inputMode = false;
+    this.prevForeground = null;
     this.pillSize = { w: PILL.w, h: PILL.h };
     this.panelSize = { w: PANEL.w, h: PANEL.h };
 
@@ -126,7 +136,9 @@ class WindowManager {
       x: originX,
       y: originY,
       file: 'pill/index.html',
-      focusable: true
+      // Nothing in the pill is typed into, so it never needs the keyboard and
+      // never has a reason to take the foreground away from another app.
+      focusable: false
     });
 
     // Created at its natural height, NOT at minH. A hidden window still runs
@@ -139,7 +151,9 @@ class WindowManager {
       x: Math.round(originX + this.pillSize.w / 2 - this.panelSize.w / 2),
       y: originY + this.pillSize.h + GAP,
       file: 'panel/index.html',
-      focusable: true,
+      // Also created unfocusable. It is made focusable for exactly as long as
+      // the user is typing in it -- see takeFocus() / releaseFocus().
+      focusable: false,
       show: false
     });
 
@@ -162,6 +176,15 @@ class WindowManager {
     // Keep the panel glued under the pill whenever the pill moves for any
     // reason (drag, snap, display change).
     this.pill.on('move', () => { if (!this.dragging) this._repositionPanel(); });
+
+    /**
+     * The user clicked away by themselves.
+     *
+     * Input mode ends, but the foreground is NOT restored: they have already
+     * chosen where they want to be, and putting them back in the window we
+     * recorded earlier would be a second focus change they did not ask for.
+     */
+    this.panel.on('blur', () => { if (this.inputMode) this.releaseFocus({ restore: false }); });
 
     return this;
   }
@@ -270,6 +293,62 @@ class WindowManager {
    */
   _dressWindow(win) {
     win32.excludeFromAltTab(win);
+    // Asserted natively as well as through the BrowserWindow option: this is
+    // the bit the whole no-stolen-focus behaviour rests on, and Electron does
+    // not offer a way to read back what it actually set.
+    win32.setNoActivate(win, true);
+  }
+
+  // ------------------------------------------------------------- focus
+  /**
+   * Hand the keyboard to the panel, remembering who had it.
+   *
+   * Called only for a deliberate act -- clicking into the composer, a search
+   * box or a settings field, or pressing the summon shortcut. Everything else
+   * (buttons, scrolling, dragging the pill, reading an answer) happens with the
+   * foreground window untouched, so the user's editor keeps its caret, its
+   * selection and any completion popup it had open.
+   */
+  takeFocus() {
+    if (!this.panel || this.panel.isDestroyed()) return false;
+    if (!this.panelOpen) this.openPanel();
+    // Recorded before we activate, and only on the way IN: re-entering while
+    // already focused would record our own panel as the window to go back to.
+    if (!this.inputMode) this.prevForeground = win32.foregroundWindow();
+    this.inputMode = true;
+    win32.setNoActivate(this.panel, false);
+    try { this.panel.setFocusable(true); } catch { /* option-only on some builds */ }
+    this.panel.focus();
+    win32.forceForeground(this.panel);
+    this.onEvent('focus:mode', { typing: true });
+    return true;
+  }
+
+  /**
+   * Stop taking the keyboard and give the foreground back.
+   *
+   * `restore` is false when the user has already moved on by themselves -- they
+   * clicked another window, and forcing focus to whatever we recorded earlier
+   * would be a second unwanted focus change on top of the one they asked for.
+   */
+  releaseFocus({ restore = true } = {}) {
+    if (!this.inputMode) return false;
+    this.inputMode = false;
+    const back = this.prevForeground;
+    this.prevForeground = null;
+
+    if (this.panel && !this.panel.isDestroyed()) {
+      try { this.panel.setFocusable(false); } catch { /* see takeFocus */ }
+      win32.setNoActivate(this.panel, true);
+      // Whoever we recorded may be gone, or may refuse the foreground. Letting
+      // go on our side is what matters; without it the panel keeps the keyboard
+      // with no caret visible anywhere.
+      if (restore && !win32.restoreForeground(back)) {
+        try { this.panel.blur(); } catch { /* nothing else to try */ }
+      }
+    }
+    this.onEvent('focus:mode', { typing: false });
+    return true;
   }
 
   // ------------------------------------------------------------- geometry
@@ -497,7 +576,7 @@ class WindowManager {
   // ------------------------------------------------------------- panel open/close
   openPanel({ focus = false } = {}) {
     if (!this.panel || this.panel.isDestroyed()) return;
-    if (this.panelOpen) { if (focus) this.panel.focus(); return; }
+    if (this.panelOpen) { if (focus) this.takeFocus(); return; }
     this.panelOpen = true;
 
     // Open collapsed at the layout's position, then spring to the content height
@@ -513,7 +592,11 @@ class WindowManager {
     // un-clipped for ~300ms while it is visibly animating.
     win32.clearRegion(this.panel);
 
-    if (focus) this.panel.show(); else this.panel.showInactive();
+    // Shown without activation either way. `focus` is honoured afterwards, and
+    // going through takeFocus() rather than show() is what records the window
+    // the keyboard is borrowed from.
+    this.panel.showInactive();
+    if (focus) this.takeFocus();
     // Re-assert protection on every show. Affinity set before a window has ever
     // been shown does not reliably persist, which is exactly how the panel
     // ended up capturable while the pill was not.
@@ -534,6 +617,10 @@ class WindowManager {
     if (!this.panel || this.panel.isDestroyed()) return;
     if (!this.panelOpen) return;
     this.panelOpen = false;
+    // Closing while typing hands the keyboard back to where it came from, so
+    // Esc out of the composer lands the caret in the editor it was borrowed
+    // from rather than nowhere.
+    this.releaseFocus();
     this.loop.stop();
     this.panel.hide();
     this.heightSpring.snapTo(PANEL.minH);

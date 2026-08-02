@@ -1591,9 +1591,22 @@ function registerIPC() {
   ipcMain.on('ui:drag-end', () => { if (wm) wm.endDrag(); });
   ipcMain.on('ui:open-settings', () => {
     if (!wm) return;
-    wm.openPanel({ focus: true });
+    // Opened unfocused. Settings is mostly switches, and the fields that do
+    // take typing ask for the keyboard themselves when they are clicked.
+    wm.openPanel({ focus: false });
     toPanel('open-settings', {});
   });
+
+  /**
+   * The renderer asking for the keyboard, and giving it back.
+   *
+   * Both windows are click-through as far as activation is concerned, so the
+   * panel only holds focus while something in it is genuinely being typed into.
+   * The renderer is the side that knows that -- it sees the focusin on the
+   * composer, and the Escape that ends it.
+   */
+  ipcMain.on('ui:focus-input', () => { if (wm) wm.takeFocus(); });
+  ipcMain.on('ui:release-focus', () => { if (wm) wm.releaseFocus(); });
   ipcMain.on('app:quit', () => { store.flush(); app.quit(); });
   // The renderer sends the menu's measured rectangle with it; the window is
   // clipped to that shape, so a stale copy of it in main is a visible artefact.

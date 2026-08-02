@@ -48,6 +48,13 @@ const DWMWCP_ROUND = 2;       // DWM's own ~8px rounding, applied to the whole f
 
 const GWL_EXSTYLE = -20;
 const WS_EX_TOOLWINDOW = 0x00000080; // keeps the overlay out of Alt-Tab
+/**
+ * A window with this style is never activated by a click on it. The click still
+ * arrives -- buttons, drag and scroll all work -- but the foreground window,
+ * and with it the caret and the IME, stays where the user left it. Removed only
+ * for as long as the user is deliberately typing into the panel.
+ */
+const WS_EX_NOACTIVATE = 0x08000000;
 
 // SetWindowPos flags. SWP_FRAMECHANGED is the important one: MSDN requires it
 // after any SetWindowLong that changes window data, or the cached frame metrics
@@ -83,6 +90,10 @@ let CreateRectRgn = null;
 let SetWindowDisplayAffinity = null;
 let GetWindowDisplayAffinity = null;
 let GetAsyncKeyState = null;
+let GetForegroundWindow = null;
+let SetForegroundWindow = null;
+let IsWindow = null;
+let GetWindowThreadProcessId = null;
 
 let available = false;
 let loadError = null;
@@ -189,6 +200,15 @@ function init() {
     // hook.
     GetAsyncKeyState = user32.func('__stdcall', 'GetAsyncKeyState', 'int16', ['int']);
 
+    // Handing focus back to whatever the user was working in. See takeFocus().
+    GetForegroundWindow = user32.func('__stdcall', 'GetForegroundWindow', 'uintptr_t', []);
+    SetForegroundWindow = user32.func('__stdcall', 'SetForegroundWindow', 'bool', ['uintptr_t']);
+    IsWindow = user32.func('__stdcall', 'IsWindow', 'bool', ['uintptr_t']);
+    GetWindowThreadProcessId = user32.func(
+      '__stdcall', 'GetWindowThreadProcessId', 'uint32',
+      ['uintptr_t', koffi.out(koffi.pointer('uint32'))]
+    );
+
     available = true;
     return true;
   } catch (e) {
@@ -209,6 +229,20 @@ function hwndOf(win) {
   } catch {
     return null;
   }
+}
+
+/**
+ * The extended style of a window, always as a BigInt.
+ *
+ * koffi returns a plain Number for an int64 whose value fits in a double, so
+ * `GetWindowLongPtr(...) | BigInt(FLAG)` throws "Cannot mix BigInt and other
+ * types" -- and both callers wrap that in a try/catch that turns the whole
+ * call into a silent no-op returning false. That is exactly what had happened
+ * to excludeFromAltTab(): it had not set WS_EX_TOOLWINDOW on anything since
+ * the day it was written, and nothing said so.
+ */
+function exStyle(hwnd) {
+  return BigInt(GetWindowLongPtr(hwnd, GWL_EXSTYLE));
 }
 
 /**
@@ -376,7 +410,7 @@ function excludeFromAltTab(win) {
   const hwnd = hwndOf(win);
   if (hwnd === null) return false;
   try {
-    const cur = GetWindowLongPtr(hwnd, GWL_EXSTYLE);
+    const cur = exStyle(hwnd);
     SetWindowLongPtr(hwnd, GWL_EXSTYLE, cur | BigInt(WS_EX_TOOLWINDOW));
 
     // Required. Without SWP_FRAMECHANGED the window keeps its previously cached
@@ -468,6 +502,96 @@ function keyDown(vk) {
   }
 }
 
+// ---------------------------------------------------------------- focus
+/**
+ * Whether a click on this window is allowed to steal the foreground.
+ *
+ * Off by default for both windows. An overlay that activates on every click
+ * takes the caret out of whatever the user was typing in, and Windows does not
+ * put it back: the editor keeps its selection but stops showing it, code
+ * completion and other focus-follows popups close, and the user has lost their
+ * place in a file they were mid-edit in. WS_EX_NOACTIVATE keeps the clicks and
+ * drops the activation.
+ *
+ * Electron's own setFocusable() sets the same bit, but it also toggles taskbar
+ * and z-order behaviour on some builds and gives no way to read the result
+ * back. This sets exactly one bit and confirms it.
+ */
+function setNoActivate(win, on) {
+  if (!available) return false;
+  const hwnd = hwndOf(win);
+  if (hwnd === null) return false;
+  try {
+    const bit = BigInt(WS_EX_NOACTIVATE);
+    const cur = exStyle(hwnd);
+    const next = on ? (cur | bit) : (cur & ~bit);
+    if (next !== cur) {
+      SetWindowLongPtr(hwnd, GWL_EXSTYLE, next);
+      // Same reason as excludeFromAltTab(): a style change without
+      // SWP_FRAMECHANGED leaves the cached frame metrics stale.
+      SetWindowPos(hwnd, 0n, 0, 0, 0, 0,
+        SWP_NOSIZE | SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+    }
+    return ((exStyle(hwnd) & bit) !== 0n) === !!on;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The window the user is actually working in, recorded before we take focus.
+ *
+ * Windows belonging to this process are reported as null: restoring focus to
+ * our own pill would be indistinguishable from not restoring it at all, and it
+ * would overwrite the one handle worth keeping.
+ */
+function foregroundWindow() {
+  if (!available) return null;
+  try {
+    const hwnd = GetForegroundWindow();
+    if (!hwnd) return null;
+    const out = [0];
+    GetWindowThreadProcessId(hwnd, out);
+    if (out[0] === process.pid) return null;
+    return hwnd;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Give the foreground back to a window recorded earlier.
+ *
+ * Best-effort on purpose. SetForegroundWindow refuses for a process that has
+ * neither the foreground nor the last input event, and the window may be gone
+ * by now. Both cases mean the user has already moved on, which is exactly when
+ * yanking the foreground around would be the wrong thing to do.
+ */
+/**
+ * Take the foreground for one of our own windows.
+ *
+ * Belt to Electron's focus(): a window that was created unfocusable does not
+ * reliably activate through it on Windows even after setFocusable(true), and a
+ * composer that has visibly taken the caret but receives no keystrokes is worse
+ * than one that never took it.
+ */
+function forceForeground(win) {
+  if (!available) return false;
+  const hwnd = hwndOf(win);
+  if (hwnd === null) return false;
+  try { return !!SetForegroundWindow(hwnd); } catch { return false; }
+}
+
+function restoreForeground(hwnd) {
+  if (!available || !hwnd) return false;
+  try {
+    if (!IsWindow(hwnd)) return false;
+    return !!SetForegroundWindow(hwnd);
+  } catch {
+    return false;
+  }
+}
+
 function status() {
   return { available, error: loadError, platform: process.platform, release: os.release() };
 }
@@ -488,5 +612,9 @@ module.exports = {
   setUnionRegion,
   clearRegion,
   disableSystemCorners,
-  excludeFromAltTab
+  excludeFromAltTab,
+  setNoActivate,
+  foregroundWindow,
+  forceForeground,
+  restoreForeground
 };
