@@ -71,9 +71,12 @@
      *
      * With the mic on push-to-talk the thing being listened to is the speakers,
      * and a mic glyph over that is a straightforward lie about what the app is
-     * hearing -- the one claim on this pill that must not be wrong.
+     * hearing -- the one claim on this pill that must not be wrong. Which is
+     * also why system audio being off puts the mic glyph back: with nothing
+     * coming from the speakers, the mic is the only source there is.
      */
-    const ambientIsMic = micMode() === 'always';
+    const systemOn = !settings || !settings.audio || settings.audio.captureSystem !== false;
+    const ambientIsMic = micMode() === 'always' || !systemOn;
     listenBtn.innerHTML = icon(
       ambientIsMic ? (on ? 'mic' : 'mic-off') : (on ? 'volume-2' : 'volume-x'),
       { size: 15 }

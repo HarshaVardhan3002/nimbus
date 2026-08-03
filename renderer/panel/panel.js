@@ -1856,7 +1856,12 @@
 
   // ---- audio sources -------------------------------------------------------
   $('#f-system-audio').addEventListener('change', async () => {
-    settings.audio = Object.assign({}, settings.audio, { captureSystem: $('#f-system-audio').checked });
+    // systemChosen: touching this switch IS the choice, whichever way it went.
+    // It is what stops a later default change overwriting it.
+    settings.audio = Object.assign({}, settings.audio, {
+      captureSystem: $('#f-system-audio').checked,
+      systemChosen: true
+    });
     syncSourceRows();
     await app.settingsSet({ audio: settings.audio });
   });

@@ -45,7 +45,7 @@ function adoptLegacy() {
   }
 }
 
-const SCHEMA = 7;
+const SCHEMA = 8;
 
 const DEFAULTS = {
   schema: SCHEMA,
@@ -184,8 +184,26 @@ const DEFAULTS = {
      * previous choice; the capture layer no longer looks at it.
      */
     captureMic: true,
-    /** System/loopback audio: whatever is playing on this PC. */
-    captureSystem: true,
+    /**
+     * System/loopback audio: whatever is playing on this PC.
+     *
+     * Off until asked for. On is the more useful setting and it used to be the
+     * default, which meant the first time a user turned listening on, every
+     * word coming out of their speakers -- a call, a meeting, someone else's
+     * voice -- was transcribed and, with a cloud route configured, sent off the
+     * machine. Nobody had been asked. Onboarding asks, and the answer is
+     * recorded in systemChosen.
+     */
+    captureSystem: false,
+    /**
+     * Whether the answer above is the user's or ours.
+     *
+     * Set the moment they choose, in onboarding or in Settings. It exists so a
+     * later default change can leave a deliberate choice alone instead of
+     * overwriting it, which is exactly what the v8 migration could not do for
+     * the choice this replaced -- there was no record of one.
+     */
+    systemChosen: false,
     // Frame-level VAD. Values are in the 0..1 normalised-energy domain used by
     // renderer/vad-processor.js.
     vadThreshold: 0.010,
@@ -376,6 +394,23 @@ function load() {
    * just because it was written to disk once.
    */
   const from = Number(disk.schema) || 1;
+  if (from < 8) {
+    /**
+     * v8: system audio is no longer captured without being asked for.
+     *
+     * Every existing file has captureSystem true, because that was the default
+     * and nothing ever recorded whether the user picked it. There is therefore
+     * no deliberate choice to preserve -- only an assumption to stop making.
+     * The setting goes off, systemChosen stays false, and onboarding asks. A
+     * user who wanted it says so once and the flag keeps it from being asked
+     * again.
+     */
+    if (!isPlainObject(disk.audio)) disk.audio = {};
+    if (disk.audio.systemChosen !== true) {
+      disk.audio.captureSystem = false;
+      disk.audio.systemChosen = false;
+    }
+  }
   if (from < 7) {
     /**
      * v7: vision stops being a per-provider flag.
