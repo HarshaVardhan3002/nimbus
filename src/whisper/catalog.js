@@ -36,16 +36,10 @@
  * check. Point stt.engine.manifestURL at your own JSON to pin sha256.
  */
 
-// Only these hosts are ever fetched from, whatever a manifest asks for.
-const HOSTS = [
-  'github.com',
-  'objects.githubusercontent.com',
-  'release-assets.githubusercontent.com',
-  'huggingface.co',
-  'cdn-lfs.huggingface.co',
-  'cdn-lfs-us-1.hf.co',
-  'cas-bridge.xethub.hf.co'
-];
+// The host allowlist lives in src/artifacts.js, because the chat model in
+// src/local is fetched from the same set and a security-relevant list that
+// exists twice is a list that will disagree with itself.
+const { HOSTS, isAllowedURL } = require('../artifacts');
 
 const WHISPER_TAG = 'v1.9.1';
 const LLAMA_TAG = 'b10223';
@@ -277,15 +271,6 @@ const MODELS = {
     }
   }
 };
-
-function isAllowedURL(url) {
-  try {
-    const u = new URL(url);
-    return u.protocol === 'https:' && HOSTS.includes(u.hostname);
-  } catch {
-    return false;
-  }
-}
 
 /** A build definition plus the chain to walk if it cannot be installed. */
 function resolveBuild(id) {

@@ -45,7 +45,7 @@ function adoptLegacy() {
   }
 }
 
-const SCHEMA = 9;
+const SCHEMA = 10;
 
 const DEFAULTS = {
   schema: SCHEMA,
@@ -69,9 +69,14 @@ const DEFAULTS = {
    */
   routes: {
     /**
-     * The floor. Empty until 1.4.0 ships a model in the box; until then Simple
-     * resolves to the General route, which is why it is a tier the user can
-     * always pick rather than one that can be broken by configuration.
+     * The floor. Empty until the user downloads the model that fills it; until
+     * then Simple resolves to the General route, which is why it is a tier the
+     * user can always pick rather than one that can be broken by configuration.
+     *
+     * Filled in by main.js when the download completes, and NOT by default: a
+     * route pointing at a model that is not on disk would make the tier report
+     * itself broken on every fresh install, which is the state this whole
+     * feature exists to avoid.
      */
     simple:  { provider: '', model: '' },
     general: { provider: 'ollama', model: '' },
@@ -175,6 +180,37 @@ const DEFAULTS = {
       // 0 means half the cores, which leaves room for the app itself
       threads: 0
     }
+  },
+
+  /**
+   * The model Nimbus runs itself, for the Simple tier.
+   *
+   * Nothing here downloads anything. `manage` only says Nimbus may run the
+   * server once the weights exist on disk; until the user presses Download in
+   * Settings there is nothing to run, and the Simple tier goes on borrowing the
+   * General route. That is deliberate -- a hundreds-of-megabytes download that
+   * starts because an app was installed is not a download anybody agreed to.
+   *
+   * `model: 'auto'` follows the hardware probe's chatTier, which only ever picks
+   * between the two Apache-licensed entries. See src/local/catalog.js.
+   */
+  local: {
+    manage: true,
+    // 'auto' follows the probe; otherwise a catalog tier: 'tiny' | 'compact' | 'standard'
+    model: 'auto',
+    // 'auto' follows the probe's build choice; otherwise 'cuda' | 'rocm' | 'vulkan' | 'cpu'
+    build: 'auto',
+    port: 8090,
+    // 0 means half the cores, which leaves room for the app itself
+    threads: 0,
+    /**
+     * Whether the model should be resident while another provider is working.
+     *
+     * Off, and the user should have to think hard before turning it on: with a
+     * real provider connected the local model answers nothing, and two loaded
+     * models is exactly the memory bill this tier was meant to spare people.
+     */
+    keepResident: false
   },
 
   audio: {
@@ -532,6 +568,17 @@ function load() {
     if (typeof disk.tier !== 'string') disk.tier = disk.smart ? 'smart' : 'general';
     delete disk.smart;
   }
+
+  /**
+   * v10: the Simple tier gets a model of its own.
+   *
+   * There is nothing to move. `local` is a new block and deepMerge supplies it,
+   * and routes.simple is deliberately left empty on upgrade for the same reason
+   * it is empty by default: nothing has been downloaded yet, and an upgrade must
+   * not start a download. The version is stamped anyway so that this file's
+   * history is readable -- a schema that only moves when data moves cannot be
+   * used to reason about what a given file has been through.
+   */
 
   /**
    * Stamp the schema AFTER every migration block, not inside one of them.

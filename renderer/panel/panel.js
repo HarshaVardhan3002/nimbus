@@ -760,6 +760,15 @@
     paintTier();
   }
 
+  /**
+   * The ladder can change without a settings write.
+   *
+   * Loading or unloading the in-the-box model makes the Simple tier ready or
+   * not, and nothing the user typed caused it. Main sends the resolved ladder
+   * rather than a hint, so the indicator never re-derives the rule.
+   */
+  app.on('tiers:changed', (t) => { tierState = t; paintTier(); });
+
   $('#tier').addEventListener('click', async () => {
     const next = TIER_ORDER[(TIER_ORDER.indexOf(activeTier()) + 1) % TIER_ORDER.length];
     settings.tier = next;
@@ -1410,6 +1419,7 @@
     // Asks the main process what the engine is doing right now, so the pane
     // never shows a build that failed to install as though it were running.
     refreshEngine().catch(() => {});
+    refreshLocal().catch(() => {});
 
     const a = settings.audio || {};
     $('#f-system-audio').checked = a.captureSystem !== false;
@@ -1906,6 +1916,133 @@
     $('#engine-hw').textContent = 'Scanning…';
     await app.engineProbe();
     await refreshEngine();
+  });
+
+  // ---- the model in the box ------------------------------------------------
+  /**
+   * Four states, four sets of buttons.
+   *
+   * not installed        Download
+   * downloading          Cancel
+   * installed, unloaded  Remove  (and it loads itself when the tier is asked)
+   * running              Unload, Remove
+   *
+   * The unloaded state is the one worth being careful about: it is the normal
+   * state for anyone with a provider connected, so the line under the buttons
+   * says why rather than leaving a downloaded model looking broken.
+   */
+  let localInfo = null;
+
+  function mb(n) {
+    return n >= 1024 ? (n / 1024).toFixed(1) + ' GB' : Math.round(n) + ' MB';
+  }
+
+  function localLine(s) {
+    if (!s) return '';
+    if (s.phase === 'ready') {
+      const how = s.accel ? ('GPU · ' + (s.device || s.build)) : 'CPU';
+      return 'Running ' + (s.label || 'the model') + ' on this machine, ' + how + '.';
+    }
+    if (s.phase === 'error') return s.message || 'It failed to start.';
+    if (s.message) return s.message;
+    if (s.phase !== 'idle') return s.phase + '…';
+    const inst = localInfo && localInfo.installed && localInfo.installed.length;
+    if (!inst) return 'Not downloaded.';
+    const ext = localInfo && localInfo.external;
+    return ext
+      ? 'Downloaded, unloaded — ' + ext.label + ' is connected and answers instead.'
+      : 'Downloaded, not loaded. It starts when the Simple tier is asked something.';
+  }
+
+  function paintLocal(s) {
+    $('#local-status').textContent = localLine(s);
+    const bar = $('#local-bar');
+    const p = s && s.progress;
+    bar.classList.toggle('hidden', !p);
+    if (p) bar.querySelector('i').style.width = Math.round(100 * p.done / (p.total || p.done || 1)) + '%';
+
+    const busy = s && (s.phase === 'downloading' || s.phase === 'extracting' || s.phase === 'starting');
+    const running = !!s && s.phase === 'ready';
+    const have = !!(localInfo && localInfo.installed && localInfo.installed.length);
+    $('#local-install').classList.toggle('hidden', busy || running);
+    $('#local-install').querySelector('span:last-child').textContent = have ? 'Start' : 'Download';
+    $('#local-cancel').classList.toggle('hidden', !busy);
+    $('#local-stop').classList.toggle('hidden', !running);
+    $('#local-remove').classList.toggle('hidden', !have || busy);
+    reportSize();
+  }
+
+  /**
+   * The note under the picker: what it costs, and what it is licensed as.
+   *
+   * Both numbers are shown because they differ by roughly a factor of two --
+   * the download is the file, the memory is the file plus its context -- and a
+   * user told only the smaller one has been misled about the larger one.
+   */
+  function paintLocalNote() {
+    const el = $('#local-note');
+    const opts = (localInfo && localInfo.options && localInfo.options.models) || [];
+    const id = $('#f-local-model').value;
+    const m = opts.find((o) => o.id === id) || opts.find((o) => o.id === (localInfo && localInfo.current));
+    if (!m) { el.textContent = ''; return; }
+    el.textContent = m.params + ' · ' + mb(m.approxMB) + ' to download · about '
+      + mb(m.footprintMB) + ' of memory while loaded · ' + m.license
+      + (m.auto ? '' : ' (chosen by hand only)');
+  }
+
+  async function refreshLocal() {
+    localInfo = await app.localStatus();
+    const cfg = settings.local || {};
+    const auto = localInfo.decision ? localInfo.decision.chatTier : null;
+    fillSelect($('#f-local-model'), localInfo.options.models,
+      { id: 'auto', label: 'Automatic' + (auto ? ' (' + auto + ')' : '') });
+    $('#f-local-model').value = cfg.model || 'auto';
+    $('#f-local-keep').checked = !!cfg.keepResident;
+    paintLocalNote();
+    paintLocal(localInfo.status);
+  }
+
+  app.on('local:engine', (s) => paintLocal(s));
+
+  $('#f-local-model').addEventListener('change', async () => {
+    const local = Object.assign({}, settings.local, { model: $('#f-local-model').value });
+    settings.local = local;
+    paintLocalNote();
+    // Saved, not fetched: changing the picker must never start a download.
+    await app.settingsSet({ local: { model: local.model } });
+    await refreshLocal();
+  });
+
+  $('#f-local-keep').addEventListener('change', async () => {
+    const keepResident = $('#f-local-keep').checked;
+    settings.local = Object.assign({}, settings.local, { keepResident });
+    await app.settingsSet({ local: { keepResident } });
+    await refreshLocal();
+  });
+
+  $('#local-install').addEventListener('click', async () => {
+    $('#local-status').textContent = 'Working…';
+    try {
+      await app.localInstall({ model: $('#f-local-model').value });
+    } catch (e) {
+      $('#local-status').textContent = (e && e.message) || String(e);
+    }
+    await refreshLocal();
+  });
+
+  $('#local-cancel').addEventListener('click', async () => {
+    await app.localCancel();
+    await refreshLocal();
+  });
+
+  $('#local-stop').addEventListener('click', async () => {
+    await app.localStop();
+    await refreshLocal();
+  });
+
+  $('#local-remove').addEventListener('click', async () => {
+    await app.localRemove({ model: $('#f-local-model').value });
+    await refreshLocal();
   });
 
   $('#f-target-lang').addEventListener('blur', async () => {

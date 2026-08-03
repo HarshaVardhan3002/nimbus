@@ -16,6 +16,8 @@ const { contextBridge, ipcRenderer } = require('electron');
  * 'transcript:stage'  the user's own speech, staged in the composer unsent.
  * 'transcript:heard'  system speech, written into the chat as a turn.
  * 'stt:engine'        install progress and health of the managed local engine.
+ * 'local:engine'      the same, for the chat model behind the Simple tier.
+ * 'tiers:changed'     the ladder was re-resolved, e.g. the local model loaded.
  * 'focus:mode'        whether the panel currently holds the keyboard.
  */
 const INBOUND = [
@@ -31,6 +33,8 @@ const INBOUND = [
   'transcript:heard',
   'audio:digest',
   'stt:engine',
+  'local:engine',
+  'tiers:changed',
   'context:usage',
   'compact:state',
   'compact:done',
@@ -67,6 +71,14 @@ contextBridge.exposeInMainWorld('nimbus', {
   engineInstall: (opts) => ipcRenderer.invoke('engine:install', opts),
   engineStop: () => ipcRenderer.invoke('engine:stop'),
   engineProbe: () => ipcRenderer.invoke('engine:probe'),
+
+  // ---- the model Nimbus runs itself, behind the Simple tier ----
+  localStatus: () => ipcRenderer.invoke('local:status'),
+  localEstimate: (opts) => ipcRenderer.invoke('local:estimate', opts),
+  localInstall: (opts) => ipcRenderer.invoke('local:install', opts),
+  localCancel: () => ipcRenderer.invoke('local:cancel'),
+  localStop: () => ipcRenderer.invoke('local:stop'),
+  localRemove: (opts) => ipcRenderer.invoke('local:remove', opts),
 
   nativeStatus: () => ipcRenderer.invoke('native:status'),
   displayInfo: () => ipcRenderer.invoke('display:info'),

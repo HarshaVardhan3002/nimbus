@@ -248,6 +248,69 @@ make it look broken. `providers.tiers()` is the single source of that verdict an
 the renderer asks for it over `providers:tiers` rather than re-deriving it from
 routes and keys, which is a rule that would immediately exist in two versions.
 
+### 4.2 The model in the box (`src/local/`)
+
+Simple borrowing General is a floor, not an answer: a machine with no provider
+and no local server still cannot say anything. So Nimbus ships the *ability* to
+run a small model and downloads it when asked.
+
+The shape is deliberately the one `src/whisper/` already uses, because it is the
+same problem — fetch a build sized to this machine, fetch weights, run a loopback
+server, health-check it, restart it a bounded number of times. `catalog.js` is
+plain data (builds, models, fallback chains, pinned hashes) and `engine.js` is
+the state machine: `idle → downloading → extracting → starting → ready`, with
+`error` absorbing. `src/hardware.js` picks the build and the tier, exactly as it
+does for transcription. Three models, measured rather than guessed;
+`LOCAL-MODELS.md` has the comparison and the two candidates that lost.
+
+Four things differ from the whisper engine, and each one is forced:
+
+- **It is a provider.** llama-server speaks OpenAI, so once it is up it is an
+  ordinary entry in the registry at `http://127.0.0.1:<port>/v1`. `nimbus` is the
+  one built-in marked `managed`, meaning Nimbus runs the server itself. Its
+  `baseURL` is process state set by `providers.setLocalEndpoint()`, never
+  settings: the port is chosen at launch, so a stored address is only a stale
+  address to be wrong about. `resolve()` treats a managed provider with no
+  address as un-ready and says so in words the user can act on.
+
+- **It is not always meant to be running.** The promise is that a user never has
+  both a real provider and our model resident. `superviseLocal()` in `main.js`
+  unloads when another provider is actually working, and `wakeLocalIfRouted()`
+  loads it back when a question arrives for the tier it serves. Measured: the
+  memory is gone in ~250 ms and back in ~1 s, which is what makes the rule
+  affordable — the alternative, "connecting a provider breaks the Simple tier",
+  is a worse app rather than a leaner one.
+
+- **Configured is not running.** `providers.externalReady()` answers from
+  settings, and the store ships with an Ollama route filled in, so on a machine
+  that never installed Ollama a configured route is evidence of nothing.
+  `externalWorking()` in `main.js` is the caller that acts on the answer: a local
+  endpoint has to answer `/v1/models` within 1.5 s, a cloud key is taken at its
+  word. Unloading our own model for a server that does not exist would leave the
+  user with two things that cannot answer.
+
+- **The accelerator is probed, not read off the log.** The whisper engine proves
+  its backend bound by matching a line the server prints on the way up.
+  llama-server stopped printing that banner at default verbosity, so the same
+  trick reports "no accelerator" on a build that is plainly using one.
+  `probeDevice()` runs `llama-server --list-devices` before launching instead:
+  the CPU build prints `(none)`, the Vulkan build names the card. `-ngl` is then
+  only passed when there is somewhere for the layers to go.
+
+**The server is authenticated.** llama-server answers with
+`Access-Control-Allow-Origin: *`. Binding to 127.0.0.1 keeps other machines out
+but does not keep *web pages* out: any site the user has open can script a
+request to loopback and, because of that header, read the reply. The engine mints
+a random bearer token per launch and passes it as `--api-key`, so inference costs
+a secret that only this process and the server hold. The token is deliberately
+not part of the engine's broadcast state — it is fetched through `engine.key()`
+by the one caller that needs it — and it is redacted from the launch log.
+`/v1/models` stays public upstream; it leaks the model alias and nothing else.
+
+Downloads never happen as a side effect. `superviseLocal()` refuses to fetch
+unless the call came from an explicit press, so no settings save can start a
+400 MB transfer.
+
 ### Vision gating
 
 Vision is a property of a **model**, not of a provider. One OpenAI-compatible

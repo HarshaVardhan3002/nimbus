@@ -17,6 +17,8 @@ const { createSTT } = require('./src/stt');
 const hardware = require('./src/hardware');
 const { createEngine } = require('./src/whisper/engine');
 const catalog = require('./src/whisper/catalog');
+const { createEngine: createLocalEngine } = require('./src/local/engine');
+const localCatalog = require('./src/local/catalog');
 const { createLLM, testConnection } = require('./src/llm');
 const {
   MODES, AMBIENT_SCREEN, DIGEST, buildDigest, splitDigest, looksDegenerate,
@@ -43,6 +45,7 @@ let ptt = null;
 let convo = null;     // the conversation currently on screen (Electron owns `session`)
 let engine = null;          // the managed whisper.cpp server, once it exists
 let engineDecision = null;  // what the hardware probe chose, before any override
+let localEngine = null;     // the managed llama.cpp server behind the Simple tier
 
 const state = {
   listening: false,
@@ -798,6 +801,157 @@ function scheduleEngineSync() {
   engineSyncTimer = setTimeout(() => { startEngine().catch(() => {}); }, 1500);
 }
 
+// ------------------------------------------------------- in-the-box model
+/**
+ * The model behind the Simple tier, and the rule that it is never resident
+ * alongside a provider that can do the same job better.
+ *
+ * Three states are worth keeping apart, because the UI has to describe them:
+ *
+ *   not installed  nothing has been downloaded. Simple borrows General, which
+ *                  is what makes the tier pickable on a fresh install.
+ *   installed, unloaded  weights on disk, no server. This is the NORMAL state
+ *                  for anyone with a working provider: the promise is that
+ *                  connecting one frees the memory, so it does.
+ *   loaded         a server on loopback, and providers.setLocalEndpoint() has
+ *                  told the registry where.
+ *
+ * Unloading is affordable because reloading is not expensive: measured at about
+ * a second from ensure() to a served answer with the file already on disk, so
+ * asking a question of a tier whose model is unloaded wakes it rather than
+ * failing. See wakeLocalIfRouted().
+ */
+function localChoice(settings) {
+  const cfg = (settings && settings.local) || {};
+  const auto = engineDecision || {};
+  return {
+    build: cfg.build && cfg.build !== 'auto' ? cfg.build : (auto.build || 'cpu'),
+    modelTier: cfg.model && cfg.model !== 'auto' ? cfg.model : (auto.chatTier || 'tiny'),
+    port: cfg.port || 8090,
+    threads: cfg.threads || 0
+  };
+}
+
+/**
+ * The engine object, without starting or downloading anything.
+ *
+ * The state listener is where the provider registry learns the address: the
+ * engine picks its own port, so nothing else can know it, and a stale address
+ * left behind after a stop would make a dead server look ready.
+ */
+function localHandle() {
+  if (!localEngine) {
+    localEngine = createLocalEngine({
+      userDataDir: app.getPath('userData'),
+      log: (m) => console.log('[nimbus] ' + m)
+    });
+    localEngine.on((st) => {
+      // The token comes from the engine rather than the state it just emitted:
+      // see engine.key(). Clearing the address also clears the token.
+      providers.setLocalEndpoint(
+        st.phase === 'ready' ? st.endpoint : '',
+        st.phase === 'ready' ? localEngine.key() : ''
+      );
+      broadcast('local:engine', st);
+      broadcast('tiers:changed', providers.tiers(store.getSettings()));
+    });
+  }
+  return localEngine;
+}
+
+/** Are the weights for the tier we would run actually on disk? */
+async function localInstalled(settings) {
+  const eng = localHandle();
+  const inst = await eng.installed();
+  const model = localCatalog.resolveModel(localChoice(settings).modelTier);
+  return { any: inst.models.length > 0, current: inst.models.includes(model.file), inst, model };
+}
+
+/**
+ * Is another provider not just configured, but actually there?
+ *
+ * providers.externalReady() answers from settings, which is the right answer to
+ * a different question. The store ships with the Ollama route filled in, so on a
+ * machine that has never installed Ollama a configured route is not evidence of
+ * anything -- and unloading our own model because of it would leave the user
+ * with two servers that cannot answer.
+ *
+ * A key and a cloud endpoint are taken at their word: nothing here can tell a
+ * valid key from an expired one without spending a request on it, and a network
+ * blip is not a reason to load a model. A LOCAL endpoint is different -- asking
+ * it for its model list is one loopback round trip, it is cached for a minute
+ * inside discoverModels, and "is this server running" is precisely what it
+ * answers.
+ */
+async function externalWorking(settings) {
+  const ext = providers.externalReady(settings);
+  if (!ext || !ext.local) return ext;
+  try {
+    const res = await providers.discoverModels(settings, ext.id, { timeoutMs: 1500 });
+    return res && res.ok ? ext : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Bring the local model in line with what the machine currently needs.
+ *
+ * `force` is the user asking directly -- a Download button, or a question aimed
+ * at the Simple tier -- and it overrides the unload rule for as long as the
+ * server stays up. Everything else is the supervisor, and the supervisor's job
+ * is mostly to turn things off.
+ */
+async function superviseLocal({ force = false, download = false } = {}) {
+  const s = store.getSettings();
+  const cfg = s.local || {};
+  const eng = localHandle();
+
+  if (cfg.manage === false) {
+    eng.stop();
+    return eng.status();
+  }
+
+  if (!download) {
+    const { current } = await localInstalled(s);
+    // Never download as a side effect. A supervisor that can start a 400 MB
+    // transfer on a settings save is a supervisor nobody can trust.
+    if (!current) return eng.status();
+  }
+
+  const external = await externalWorking(s);
+  if (external && !force && !cfg.keepResident) {
+    if (eng.status().phase === 'ready') {
+      log('local: unloading, ' + external.label + ' is connected');
+      eng.stop();
+    }
+    return eng.status();
+  }
+
+  try {
+    return await eng.ensure(localChoice(s));
+  } catch (e) {
+    log('local: ' + ((e && e.message) || e));
+    return eng.status();
+  }
+}
+
+/**
+ * Wake the model if the tier about to answer is the one it serves.
+ *
+ * This is the other half of the unload rule. Without it, "free the memory when a
+ * provider connects" would mean "the Simple tier stops working when a provider
+ * connects", which is a worse app, not a leaner one.
+ */
+async function wakeLocalIfRouted(tier) {
+  const s = store.getSettings();
+  const route = providers.routeFor(s, tier);
+  if (route.provider !== 'nimbus') return;
+  if (localEngine && localEngine.status().phase === 'ready') return;
+  notify('Loading the built-in model...');
+  await superviseLocal({ force: true });
+}
+
 // ---------------------------------------------------------------- STT
 /**
  * One utterance in, one transcription out.
@@ -1018,6 +1172,9 @@ async function runFeature(mode, userText) {
 
   try {
     const settings = store.getSettings();
+    // The Simple tier's model is unloaded whenever a real provider is working,
+    // so asking for it is the signal to bring it back. Roughly a second.
+    await wakeLocalIfRouted(providers.activeTier(settings));
     // Resolve through the tier's own route, not a global provider.
     const llm = createLLM(settings, providers.activeTier(settings));
 
@@ -1292,6 +1449,13 @@ function registerIPC() {
     syncPushToTalk();
     // A changed engine build, model, port or language means a different server.
     if (patch && patch.stt) scheduleEngineSync();
+    /**
+     * Any save can change whether a real provider is working, which is the one
+     * input to the unload rule. Cheap when the answer has not changed: it stops
+     * at a status read unless the model is both installed and in the wrong
+     * state, and it can never start a download.
+     */
+    superviseLocal().catch(() => {});
     // The window springs are the half of reduced motion CSS cannot reach, and
     // this is the only write path the Look tab uses, so it takes effect on the
     // next open rather than on the next launch.
@@ -1461,6 +1625,96 @@ function registerIPC() {
   ipcMain.handle('engine:stop', () => {
     if (engine) engine.stop();
     return engine ? engine.status() : null;
+  });
+
+  /**
+   * The in-the-box model, for the Models tab.
+   *
+   * Reports what is on disk separately from what is running, because the normal
+   * state for a user with a provider is "installed and deliberately not
+   * running", and a pane that cannot say that reads as a broken install.
+   */
+  ipcMain.handle('local:status', async () => {
+    const s = store.getSettings();
+    const eng = localHandle();
+    const { inst, model } = await localInstalled(s);
+    const external = await externalWorking(s);
+    return {
+      status: eng.status(),
+      choice: localChoice(s),
+      installed: inst.models,
+      current: model.id,
+      options: localCatalog.options(),
+      decision: engineDecision,
+      // Why it is not running, when it is not: the honest answer is usually
+      // "because something better is", and that is worth saying out loud.
+      external: external ? { id: external.id, label: external.label, model: external.model } : null,
+      routed: providers.routeFor(s, 'simple').provider === 'nimbus'
+    };
+  });
+
+  /** What a download would cost, asked of the servers rather than guessed. */
+  ipcMain.handle('local:estimate', async (_e, opts) => {
+    const s = store.getSettings();
+    const choice = localChoice(s);
+    return localHandle().estimate({
+      build: (opts && opts.build) || choice.build,
+      modelTier: (opts && opts.model) || choice.modelTier
+    });
+  });
+
+  /**
+   * Download and start, on an explicit press only.
+   *
+   * On success the Simple route is pointed at the model, which is the moment the
+   * tier stops borrowing General. The alias llama-server was started with is the
+   * model name, so the route names something the server will actually answer to.
+   */
+  ipcMain.handle('local:install', async (_e, opts) => {
+    const patch = {};
+    if (opts && opts.model) patch.model = opts.model;
+    if (opts && opts.build) patch.build = opts.build;
+    if (Object.keys(patch).length) store.setSettings({ local: patch });
+
+    const st = await superviseLocal({ force: true, download: true });
+    if (st && st.phase === 'ready') {
+      const model = localCatalog.resolveModel(localChoice(store.getSettings()).modelTier);
+      const next = store.setSettings({ routes: { simple: { provider: 'nimbus', model: model.model } } });
+      broadcast('settings:changed', next);
+      notify(model.label + ' is ready. The Simple tier now runs on this machine.');
+    }
+    return st;
+  });
+
+  /** Stop the download. The .part file goes with it; see src/artifacts.js. */
+  ipcMain.handle('local:cancel', () => {
+    const eng = localHandle();
+    eng.cancel();
+    return eng.status();
+  });
+
+  /** Unload without uninstalling: the weights stay, the memory comes back. */
+  ipcMain.handle('local:stop', () => {
+    const eng = localHandle();
+    eng.stop();
+    return eng.status();
+  });
+
+  /**
+   * Give the disk back.
+   *
+   * The Simple route is cleared with it, so the tier falls back to borrowing
+   * General rather than pointing at a model that is no longer there.
+   */
+  ipcMain.handle('local:remove', async (_e, opts) => {
+    const eng = localHandle();
+    const all = !!(opts && opts.all);
+    if (all) await eng.purge();
+    else await eng.removeModel((opts && opts.model) || localChoice(store.getSettings()).modelTier);
+    if (providers.routeFor(store.getSettings(), 'simple').provider === 'nimbus') {
+      broadcast('settings:changed', store.setSettings({ routes: { simple: { provider: '', model: '' } } }));
+    }
+    return eng.status();
   });
 
   /** Re-run the hardware probe: a card can be swapped in after install. */
@@ -1885,15 +2139,24 @@ app.whenReady().then(() => {
     // installs through engine:install when they say yes.
     if (!store.getSettings().onboarded) return;
     startEngine().catch(() => {});
+    /**
+     * The chat model, if there is one and nothing better is connected.
+     *
+     * Downloads nothing on its own -- superviseLocal() refuses to without an
+     * explicit press -- so on a machine that never installed it this is a
+     * directory listing and then silence.
+     */
+    superviseLocal().catch(() => {});
   }, 2000);
 });
 
 app.on('will-quit', () => {
   if (warmth) warmth.stop();
   if (ptt) ptt.stop();
-  // The server is our child process: leaving it running would hold the port and
-  // a model's worth of memory after Nimbus is gone.
+  // Both servers are our child processes: leaving either running would hold a
+  // port and a model's worth of memory after Nimbus is gone.
   if (engine) engine.stop();
+  if (localEngine) localEngine.stop();
   digest.stop();
   globalShortcut.unregisterAll();
   store.flush();          // debounced writes must not be lost on exit

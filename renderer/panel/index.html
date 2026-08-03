@@ -334,6 +334,50 @@
           <div class="s-hint" id="route-warning"></div>
         </div>
 
+        <!--
+          The model Nimbus downloads and runs itself.
+
+          The copy here is deliberately unflattering. This tier exists so that a
+          machine with no provider and no local server is not an app that can
+          answer nothing -- it is not a small Smart, and describing it as one
+          would earn exactly one disappointed try and then permanent disuse.
+
+          Nothing downloads until this button is pressed, and the size shown is
+          asked of the server rather than typed in here.
+        -->
+        <div class="s-group" data-tab="models" id="group-local">
+          <div class="s-label">In the box <span class="s-hint">runs on this machine, no account</span></div>
+          <div class="s-hint">
+            A small model for the Simple tier: getting around Nimbus, short answers, and tidying
+            up transcripts. It is not a reasoning model &mdash; anything that needs real thinking
+            belongs on General or Smart. Downloaded when you ask for it, never with the app.
+          </div>
+          <div class="s-row" id="row-local-model">
+            <span>Model</span>
+            <select id="f-local-model"></select>
+          </div>
+          <div class="s-hint" id="local-note"></div>
+          <div class="s-row inline" id="row-local-actions">
+            <button id="local-install" class="ghost-btn small"><span class="ic"></span><span>Download</span></button>
+            <button id="local-cancel" class="ghost-btn small hidden"><span class="ic"></span><span>Cancel</span></button>
+            <button id="local-stop" class="ghost-btn small hidden"><span class="ic"></span><span>Unload</span></button>
+            <button id="local-remove" class="ghost-btn small hidden"><span class="ic"></span><span>Remove</span></button>
+          </div>
+          <div class="ctx-bar hidden" id="local-bar"><i></i></div>
+          <div id="local-status" class="s-hint"></div>
+          <!--
+            Off by default, and phrased as the trade it is. With a provider
+            connected this model answers nothing, so keeping it loaded spends
+            memory on a server that is idle by construction.
+          -->
+          <label class="s-check" data-adv>
+            <input id="f-local-keep" type="checkbox" />
+            <span>Keep it loaded while a provider is connected
+              <em>Off, the model is unloaded whenever another provider can answer, and loaded again
+                in about a second when the Simple tier is asked something.</em></span>
+          </label>
+        </div>
+
         <div class="s-group" data-tab="models">
           <div class="s-label">Provider connections <span class="s-hint">keys and endpoints</span></div>
           <input id="provider-search" type="text" placeholder="Search providers" spellcheck="false" />

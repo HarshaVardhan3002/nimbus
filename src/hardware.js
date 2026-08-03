@@ -255,9 +255,30 @@ function classify(report) {
   else if (budget >= 1.5) modelTier = 'small';
   else modelTier = 'base';
 
+  /**
+   * How big a chat model this machine can hold, which is a different question.
+   *
+   * Transcription runs in bursts against an idle app: the user is not reading
+   * anything while they dictate, and the model is resident for seconds. The chat
+   * model is resident for as long as the tier is connected and it competes with
+   * whatever the user is actually doing, so this tier is deliberately one step
+   * more conservative than the whisper one on the same hardware.
+   *
+   * System RAM, not the GPU budget, is the gate below: a quantised 1B offloaded
+   * to a card still holds its weights in system memory on the way there, and the
+   * machines this tier exists for are the ones with 8 GB and no card at all.
+   *
+   * Only two of the three catalog tiers appear here. The middle one is
+   * Gemma-licensed, and a probe result is not consent to a licence -- a user
+   * picks that one themselves. Measured: 542 MB resident for tiny, 1745 MB for
+   * standard, so 12 GB is where the larger one stops being rude.
+   */
+  const chatTier = (ramGB >= 12 && (build !== 'cpu' || cores >= 8)) ? 'standard' : 'tiny';
+
   return {
     build,
     modelTier,
+    chatTier,
     ramGB: Math.round(ramGB * 10) / 10,
     cores,
     elevated: !!r.elevated,
@@ -277,7 +298,8 @@ function classify(report) {
 function describe(decision) {
   const d = decision || {};
   const gpu = d.gpu ? d.gpu.name + (d.gpu.vramGB ? ' (' + d.gpu.vramGB + ' GB)' : '') : 'no GPU';
-  return gpu + ', ' + (d.ramGB || 0) + ' GB RAM -> ' + (d.build || 'cpu') + ' build, ' + (d.modelTier || 'base') + ' model';
+  return gpu + ', ' + (d.ramGB || 0) + ' GB RAM -> ' + (d.build || 'cpu') + ' build, '
+    + (d.modelTier || 'base') + ' transcription, ' + (d.chatTier || 'tiny') + ' chat model';
 }
 
 module.exports = { probe, classify, describe, fallbackReport, isIntegrated, SCHEMA };

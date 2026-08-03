@@ -22,6 +22,27 @@ const tokens = require('./tokens');
 const OPENAI_COMPATIBLE = 'openai';
 
 const BUILTIN = {
+  /**
+   * The model Nimbus downloads and runs itself.
+   *
+   * It is an ordinary OpenAI-compatible local provider, because that is exactly
+   * what llama-server is once it is up. The only thing unusual about it is that
+   * its baseURL is not a constant: the engine picks a free port at launch, so
+   * the address is filled in by setLocalEndpoint() when the server reports
+   * ready, and cleared when it stops. A `null` baseURL here is the honest
+   * statement that nothing is listening yet.
+   */
+  nimbus: {
+    id: 'nimbus',
+    label: 'In the box',
+    kind: OPENAI_COMPATIBLE,
+    baseURL: null,
+    needsKey: false,
+    local: true,
+    managed: true,          // Nimbus starts and stops this one. See src/local.
+    vision: false,
+    defaults: { fast: '', smart: '' }
+  },
   openai: {
     id: 'openai',
     label: 'OpenAI',
@@ -89,7 +110,34 @@ const BUILTIN = {
   }
 };
 
-const BUILTIN_ORDER = ['ollama', 'lmstudio', 'openai', 'anthropic', 'gemini', 'nvidia'];
+const BUILTIN_ORDER = ['nimbus', 'ollama', 'lmstudio', 'openai', 'anthropic', 'gemini', 'nvidia'];
+
+/**
+ * Where the managed local server is listening, once it is, and the token that
+ * gets in.
+ *
+ * Process state, not settings: the port is chosen at launch and the token is
+ * minted at launch, so both are meaningless across restarts and writing them to
+ * disk would only create a stale address to be wrong about. main.js calls this
+ * from the engine's state listener.
+ *
+ * The token is not privacy theatre. llama-server sets `Access-Control-Allow-
+ * Origin: *`, so a loopback bind keeps other machines out but keeps no web page
+ * out: any site the user visits can script a request to 127.0.0.1 and read the
+ * reply. Requiring a bearer token the page cannot know closes that, because the
+ * server is the only other thing that has it. See src/local/engine.js.
+ */
+let managedEndpoint = '';
+let managedKey = '';
+
+function setLocalEndpoint(url, key) {
+  managedEndpoint = String(url || '');
+  managedKey = managedEndpoint ? String(key || '') : '';
+}
+
+function localEndpoint() {
+  return managedEndpoint;
+}
 
 /** Placeholder key. The OpenAI SDK throws on an empty apiKey even when the
  *  endpoint ignores auth entirely, which is the normal case for local servers. */
@@ -101,7 +149,10 @@ function customList(settings) {
 
 /** Every provider the user can pick, built-in and custom, in display order. */
 function list(settings) {
-  const out = BUILTIN_ORDER.map((id) => ({ ...BUILTIN[id] }));
+  const out = BUILTIN_ORDER.map((id) => ({
+    ...BUILTIN[id],
+    ...(BUILTIN[id].managed ? { baseURL: managedEndpoint || null } : {})
+  }));
   for (const c of customList(settings)) {
     if (!c || !c.id || BUILTIN[c.id]) continue;
     out.push({
@@ -161,6 +212,15 @@ function resolve(settings, id) {
 
   const hasKey = !!rawKey;
   const keySatisfied = p.needsKey ? hasKey : true;
+  /**
+   * A managed provider is ready only while its own server is up.
+   *
+   * Every other provider is an address someone else is responsible for, so a
+   * configured route is as much as this module can check. This one Nimbus runs,
+   * and between "not downloaded", "downloading" and "unloaded because a real
+   * provider took over" it is un-ready far more often than it is ready.
+   */
+  const endpointSatisfied = !p.managed || !!baseURL;
 
   return {
     ...p,
@@ -172,16 +232,19 @@ function resolve(settings, id) {
     // cloud providers were returning undefined -- falsy, and therefore working
     // by accident, but it made `p.local === false` untrue for a cloud provider.
     local: !!p.local,
-    apiKey: hasKey ? rawKey : (p.needsKey ? '' : NO_KEY),
+    // The managed server mints its own token per launch; nothing the user typed
+    // applies to it, and there is no settings field that could hold it.
+    apiKey: p.managed ? (managedKey || NO_KEY) : (hasKey ? rawKey : (p.needsKey ? '' : NO_KEY)),
     model,
     tier,
     hasKey,
     // The corrected readiness gate: a keyless local provider with a model set
     // is ready. The old `!!apiKey && !!model` made that state unreachable.
-    ready: keySatisfied && !!model,
+    ready: keySatisfied && endpointSatisfied && !!model,
     reason: !keySatisfied
       ? `Add an API key for ${label} in Settings.`
-      : (!model ? `Pick a ${tier} model for ${label} in Settings.` : null)
+      : (!endpointSatisfied ? `${label} is not running. Download it in Settings.`
+        : (!model ? `Pick a ${tier} model for ${label} in Settings.` : null))
   };
 }
 
@@ -282,11 +345,35 @@ function resolveTier(settings, tier) {
     contextWindow: contextWindowFor(settings, providerId, model),
     tier: route.tier,
     routed: !!route.provider,
-    ready: (base.needsKey ? base.hasKey : true) && !!model,
+    ready: (base.needsKey ? base.hasKey : true) && (!base.managed || !!base.baseURL) && !!model,
     reason: (base.needsKey && !base.hasKey)
       ? `Add an API key for ${base.label} in Settings.`
-      : (!model ? `Pick a model for the ${route.tier} tier in Settings.` : null)
+      : (base.managed && !base.baseURL) ? `${base.label} is not running. Download it in Settings.`
+        : (!model ? `Pick a model for the ${route.tier} tier in Settings.` : null)
   };
+}
+
+/**
+ * Is there a provider that is not ours to run?
+ *
+ * The supervisor asks this to decide whether the downloaded model should be
+ * resident at all: the promise is that a user never has both a real provider
+ * and our own model in memory. General and Smart are the tiers that answer real
+ * questions, so a working route on either is what counts -- a Simple route
+ * pointed at somebody else's local server counts too, since it is theirs to run.
+ *
+ * Configured, not reachable. This module has never opened a socket and should
+ * not start: the store ships with an Ollama route filled in, so on a machine
+ * that never installed Ollama this returns a provider that answers nothing.
+ * Callers that are about to act on the answer check liveness themselves --
+ * see externalWorking() in main.js.
+ */
+function externalReady(settings) {
+  for (const t of TIERS) {
+    const r = resolveTier(settings, t);
+    if (r && r.ready && !r.managed) return r;
+  }
+  return null;
 }
 
 /**
@@ -763,7 +850,7 @@ async function discoverModels(settings, id, { timeoutMs = 6000, force = false } 
   }
   const base = (p.baseURL || 'https://api.openai.com/v1').replace(/\/+$/, '');
 
-  const ck = discoveryKey(id, base, p.hasKey ? p.apiKey : '');
+  const ck = discoveryKey(id, base, p.apiKey === NO_KEY ? '' : p.apiKey);
   if (!force) {
     const hit = discoveryCache.get(ck);
     if (hit && hit.expires > Date.now()) return hit.value;
@@ -781,7 +868,9 @@ async function discoverModels(settings, id, { timeoutMs = 6000, force = false } 
   const t = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
     const headers = { Accept: 'application/json' };
-    if (p.hasKey) headers.Authorization = `Bearer ${p.apiKey}`;
+    // Any real key, whether the user typed it or the managed server minted it.
+    // NO_KEY is a placeholder for servers that ignore auth; sending it is noise.
+    if (p.apiKey && p.apiKey !== NO_KEY) headers.Authorization = `Bearer ${p.apiKey}`;
     const res = await fetch(`${base}/models`, { headers, signal: ctrl.signal });
     if (!res.ok) return remember({ ok: false, error: httpHint(res.status, base, p), models: [] });
     const json = await res.json();
@@ -810,6 +899,7 @@ async function discoverModels(settings, id, { timeoutMs = 6000, force = false } 
 module.exports = {
   BUILTIN, BUILTIN_ORDER, NO_KEY, OPENAI_COMPATIBLE,
   list, get, labelOf, resolve, resolveTier, routeFor, activeTier, tiers,
+  setLocalEndpoint, localEndpoint, externalReady,
   TIERS, TIER_LABELS, ROUTE_TIERS,
   capabilityKey, modelInfoFor, visionFor, contextWindowFor, contextBudgetFor,
   charsPerTokenFor, learnModel, compactorFor, INFO_RANK, WINDOW_RANK,
