@@ -1436,6 +1436,7 @@
     $('#zoom-val').textContent = Math.round((ui.textZoom || 1) * 100) + '%';
     $('#f-stealth').checked = !!ui.privacy;
     $('#f-model-indicator').checked = !!ui.modelIndicator;
+    $('#f-reduce-motion').checked = !!ui.reduceMotion;
 
     const hcfg = settings.history || {};
     const ctx = typeof hcfg.contextTurns === 'number' ? hcfg.contextTurns : 12;
@@ -2173,6 +2174,15 @@
 
   $('#provider-search').addEventListener('input', renderProviders);
 
+  $('#f-reduce-motion').addEventListener('change', async () => {
+    const on = $('#f-reduce-motion').checked;
+    settings.ui = Object.assign({}, settings.ui, { reduceMotion: on });
+    // Applied here as well as from the broadcast, so the checkbox stops the
+    // motion of the click that set it rather than of the next one.
+    applyMotion(settings);
+    await app.settingsSet({ ui: { reduceMotion: on } });
+  });
+
   $('#f-model-indicator').addEventListener('change', async () => {
     const on = $('#f-model-indicator').checked;
     settings.ui = Object.assign({}, settings.ui, { modelIndicator: on });
@@ -2370,7 +2380,7 @@
   app.on('audio:digest', (d) => addDigest(d));
   app.on('transcript:heard', (h) => addHeard(h));
   app.on('transcript:stage', ({ text }) => stageTranscript(text));
-  app.on('settings:changed', (s) => { settings = s; refreshModelChip(); });
+  app.on('settings:changed', (s) => { settings = s; applyMotion(s); refreshModelChip(); });
   app.on('context:usage', (c) => paintContext(c));
   app.on('compact:state', (s) => { compacting = !!(s && s.active); paintCompactBtn(); });
   app.on('compact:advice', (a) => showAdvice(a));
@@ -2636,6 +2646,21 @@
     r.classList.toggle('shaped', mode === 'shaped' || mode === 'off');
   }
 
+  /**
+   * The app's own reduced-motion switch, handed to CSS.
+   *
+   * A class rather than a stylesheet swap so it can be turned on and off without
+   * a reload, and on <html> rather than <body> so the rule can reach everything
+   * including the scrollbars. The OS preference is honoured separately in
+   * glass.css; this is the half a user can set when the OS says nothing.
+   *
+   * The window springs live in the main process and are out of CSS's reach --
+   * WindowManager reads the same setting.
+   */
+  function applyMotion(s) {
+    document.documentElement.classList.toggle('reduce-motion', !!((s && s.ui) || {}).reduceMotion);
+  }
+
   // ---- boot ----------------------------------------------------------------
   (async function boot() {
     settings = await app.settingsGet();
@@ -2679,6 +2704,7 @@
     } catch { /* non-fatal */ }
 
     document.documentElement.style.setProperty('--text-zoom', (settings.ui && settings.ui.textZoom) || 1);
+    applyMotion(settings);
     await refreshTiers();
     refreshModelChip();
     // Must precede any settings render: the groups are hidden until a tab is

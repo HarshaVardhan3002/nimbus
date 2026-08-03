@@ -43,9 +43,12 @@ body { display: inline-block; }
 .mark-glyph { display: inline-flex; }
 
 /* Working. A slow breath, not a spinner: it signals "busy" without implying
-   measurable progress we do not have. */
+   measurable progress we do not have.
+   Off the shared durations on purpose: those are transition lengths, sized for
+   a state change the eye should barely catch. This is a loop the eye is meant
+   to follow, and at 200ms it would be a strobe. */
 body.thinking .mark { color: var(--tx-1); }
-body.thinking .mark-glyph { animation: breathe 1.8s var(--ease) infinite; }
+body.thinking .mark-glyph { animation: breathe 1.8s var(--ease-std) infinite; }
 @keyframes breathe {
   0%, 100% { opacity: 0.45; transform: scale(0.94); }
   50%      { opacity: 1;    transform: scale(1); }
@@ -59,7 +62,7 @@ body.thinking .mark-glyph { animation: breathe 1.8s var(--ease) infinite; }
   max-width: 0;
   overflow: hidden;
   opacity: 0;
-  transition: max-width var(--t-normal) var(--ease), opacity var(--t-fast) var(--ease);
+  transition: max-width var(--t-normal) var(--ease-std), opacity var(--t-fast) var(--ease-std);
 }
 body.listening .stage,
 body.has-message .stage { max-width: 300px; opacity: 1; }
@@ -99,7 +102,7 @@ body.listening.has-message .wave { display: none; }
   opacity: 0.5;
   transform: scaleY(0.1875);   /* 3px at rest */
   transform-origin: center;
-  transition: transform 80ms var(--ease), opacity 80ms linear;
+  transition: transform var(--t-fast) var(--ease-std), opacity var(--t-fast) var(--ease-std);
 }
 body.speech .wave i { opacity: 1; }
 
@@ -127,7 +130,7 @@ body.speech .wave i { opacity: 1; }
    never ambiguous about which source it belongs to. */
 body.mic-open .wave i { background: var(--warn); }
 
-#toggle-btn .chev { display: inline-flex; transition: transform var(--t-normal) var(--ease); }
+#toggle-btn .chev { display: inline-flex; transition: transform var(--t-normal) var(--ease-std); }
 #toggle-btn.open .chev { transform: rotate(180deg); }
 
 .mark, .icon-btn { cursor: pointer; }
@@ -144,7 +147,7 @@ body.mic-open .wave i { background: var(--warn); }
   opacity: 0;
   transform: translateY(-4px);
   pointer-events: none;
-  transition: opacity var(--t-fast) var(--ease), transform var(--t-fast) var(--ease);
+  transition: opacity var(--t-fast) var(--ease-std), transform var(--t-fast) var(--ease-std);
 }
 #menu.open { opacity: 1; transform: none; pointer-events: auto; }
 

@@ -26,11 +26,18 @@ const MAX_CATCHUP = 0.25; // clamp: never simulate more than 250ms after a stall
  *   decay rate        = z*w0   (the envelope falls as e^(-z*w0*t))
  *   overshoot         = exp(-pi*z / sqrt(1-z^2))   for z < 1
  *
- * emerge:   w0 21.9, z 0.776 -> 1.4% overshoot, settles ~367ms measured.
- *           That overshoot is the whole "pops out" character.
- * resize:   z 0.94 -> no measurable overshoot. Content resizing under the
- *           cursor should not bounce; that reads as instability, not polish.
- * collapse: z 0.91, ~190ms. Nothing should linger.
+ * emerge:   w0 28.3, z 0.955 -> settles ~325ms over a 516px open.
+ * resize:   w0 24.5, z 0.94 -> ~308ms. Content resizing under the cursor should
+ *           not bounce; that reads as instability, not polish.
+ * collapse: w0 37.4, z 0.91, ~217ms. Nothing should linger.
+ *
+ * None of the three overshoots by as much as the 0.5px rest threshold below, so
+ * none of them overshoots by anything the screen can show. That is deliberate
+ * and it is the same rule the stylesheets follow: nothing in this app bounces.
+ * `emerge` used to, at z 0.776 and 7.8px of overshoot on a full-height open —
+ * that was its "pops out" character, and it announced itself. Raising both k and
+ * z removed the bounce AND cut the settle from 383ms, because overshoot is time
+ * spent travelling away from where you are going.
  *
  * Counter-intuitive result worth recording: critically damped (z = 1) is NOT
  * the fastest to settle. Its response carries a (1 + w0*t) polynomial term
@@ -40,7 +47,7 @@ const MAX_CATCHUP = 0.25; // clamp: never simulate more than 250ms after a stall
  * while keeping overshoot under 0.2%, which is invisible.
  */
 const PRESETS = {
-  emerge:   { stiffness: 480,  damping: 34, mass: 1 },
+  emerge:   { stiffness: 800,  damping: 54, mass: 1 },
   resize:   { stiffness: 600,  damping: 46, mass: 1 },
   collapse: { stiffness: 1400, damping: 68, mass: 1 }
 };

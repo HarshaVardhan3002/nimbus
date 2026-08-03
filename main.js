@@ -1292,6 +1292,10 @@ function registerIPC() {
     syncPushToTalk();
     // A changed engine build, model, port or language means a different server.
     if (patch && patch.stt) scheduleEngineSync();
+    // The window springs are the half of reduced motion CSS cannot reach, and
+    // this is the only write path the Look tab uses, so it takes effect on the
+    // next open rather than on the next launch.
+    if (wm) wm.setReduceMotion((next.ui || {}).reduceMotion);
     broadcast('settings:changed', next);
     // The route, the reply budget and a manual window override all live in
     // settings, so any save can change what the bar should read.
@@ -1798,6 +1802,7 @@ app.whenReady().then(() => {
 
   const ui0 = store.getSettings().ui || {};
   if (ui0.glass) wm.glassMode = ui0.glass;
+  wm.setReduceMotion(ui0.reduceMotion);
 
   /**
    * Re-centre once the renderer has reported its real width.

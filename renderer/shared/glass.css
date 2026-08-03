@@ -64,10 +64,28 @@
   --r-card:  12px;
   --r-ctl:   8px;
 
-  /* Motion. Short and unfussy; nothing here should draw attention to itself. */
-  --ease: cubic-bezier(0.32, 0.72, 0, 1);
+  /**
+   * Motion. The whole vocabulary, and the whole vocabulary is these five names.
+   *
+   * Two curves: --ease-std for a thing changing state in place, --ease-decel for
+   * a thing arriving. Three durations, and the gap between them is meant to be
+   * legible -- 120/200/240 rather than a continuum, so "which one" is a real
+   * question with a real answer.
+   *
+   * Nothing overshoots. An interface element that springs past its target and
+   * comes back is telling the user about the animation, and the animation is not
+   * the message. That holds for the window springs in src/spring.js too: every
+   * preset there is damped past the point where its overshoot could reach half
+   * a pixel.
+   *
+   * Anything in either stylesheet that uses a raw duration or `linear` should
+   * carry a comment saying why. There are two, both step functions.
+   */
+  --ease-std:   cubic-bezier(0.32, 0.72, 0, 1);
+  --ease-decel: cubic-bezier(0.16, 1, 0.3, 1);
   --t-fast:   120ms;
   --t-normal: 200ms;
+  --t-slow:   240ms;
 
   --text-zoom: 1;
 }
@@ -162,10 +180,6 @@ html[data-theme='porcelain'] {
   --accent-deep: color-mix(in srgb, var(--accent) 78%, black);
 
   --font-display: var(--font);
-
-  --ease-std:   var(--ease);
-  --ease-decel: cubic-bezier(0.16, 1, 0.3, 1);
-  --t-med: var(--t-normal);
 }
 
 * { box-sizing: border-box; }
@@ -267,7 +281,7 @@ button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  transition: background var(--t-fast) var(--ease), color var(--t-fast) var(--ease);
+  transition: background var(--t-fast) var(--ease-std), color var(--t-fast) var(--ease-std);
 }
 button:focus { outline: none; }
 button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
@@ -287,7 +301,7 @@ input, textarea, select {
   border: 1px solid var(--line);
   border-radius: var(--r-ctl);
   outline: none;
-  transition: border-color var(--t-fast) var(--ease);
+  transition: border-color var(--t-fast) var(--ease-std);
 }
 input:focus, textarea:focus, select:focus { border-color: var(--line-firm); }
 input::placeholder, textarea::placeholder { color: var(--tx-3); }
@@ -315,9 +329,39 @@ input::placeholder, textarea::placeholder { color: var(--tx-3); }
 }
 ::-webkit-scrollbar-thumb:hover { background: var(--line-firm); background-clip: padding-box; }
 
+/**
+ * Stop. Both halves of it.
+ *
+ * The OS preference and the app's own `ui.reduceMotion` land on the same rule,
+ * because a user who has asked for less motion should not have to ask twice, and
+ * a user whose OS says nothing should still be able to ask here.
+ *
+ * 0.01ms rather than 0: a zero duration makes some engines skip the
+ * transitionend/animationend event entirely, and anything waiting on that event
+ * to clean up a class never runs. Two hundredths of a frame is unobservable and
+ * still fires.
+ *
+ * `animation-iteration-count` is why this needs more than durations. The caret
+ * and the thinking breath loop forever; shortening their period only makes them
+ * flicker faster. They are pinned to a single pass and left where they land.
+ *
+ * This covers the renderers. The window springs are main-process JS and cannot
+ * be reached by CSS -- WindowManager reads the same setting and snaps instead.
+ */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
   }
+}
+
+html.reduce-motion *,
+html.reduce-motion *::before,
+html.reduce-motion *::after {
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.01ms !important;
+  scroll-behavior: auto !important;
 }

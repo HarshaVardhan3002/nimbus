@@ -418,6 +418,72 @@ ok.push('registry: all built-in providers present in both registry and store def
   }
 }
 
+// ------------------------------------------------- 7d. motion vocabulary
+/**
+ * One set of durations, one set of curves, and both of them live in glass.css.
+ *
+ * The failure this catches is not ugly motion, it is drift: a 150ms here and a
+ * 0.3s there, each defensible alone, adding up to an app where nothing is quite
+ * in step with anything else and no single edit can fix it. Timing is invisible
+ * until it is inconsistent, so nobody reviews it -- which is the argument for
+ * having the build do it.
+ *
+ * The two indefinite loops are exempt by name. They are the app's only
+ * animations that repeat, they are documented in place, and both are pinned to
+ * one pass under reduced motion.
+ */
+{
+  const LOOPS = ['blink', 'breathe'];
+  const SHEETS = [
+    'renderer/shared/glass.css',
+    'renderer/panel/panel.css',
+    'renderer/pill/pill.css'
+  ];
+  let checked = 0;
+  for (const f of SHEETS) {
+    const css = read(f);
+    if (!css) { problems.push('MOTION: cannot read ' + f); continue; }
+    const decls = css.matchAll(/(?:^|[;{])\s*(transition|animation)\s*:\s*([^;}]+)/g);
+    for (const m of decls) {
+      const [, prop, raw] = m;
+      const value = raw.replace(/\s+/g, ' ').trim();
+      if (LOOPS.some((n) => new RegExp('\\b' + n + '\\b').test(value))) { checked += 1; continue; }
+      const literals = value.match(/(?<![\w-])\d*\.?\d+m?s\b/g) || [];
+      const curves = value.match(/(?<![\w-])(linear|ease-in-out|ease-in|ease-out|ease|step-end|step-start|steps)(?![\w-])/g) || [];
+      const line = css.slice(0, m.index).split('\n').length;
+      for (const lit of literals) {
+        problems.push('MOTION: ' + f + ':' + line + ' ' + prop + ' uses a raw duration '
+          + lit + ' — use --t-fast/--t-normal/--t-slow');
+      }
+      for (const c of curves) {
+        problems.push('MOTION: ' + f + ':' + line + ' ' + prop + ' uses a raw timing function '
+          + c + ' — use --ease-std/--ease-decel');
+      }
+      checked += 1;
+    }
+  }
+
+  // The switch has to reach both halves: CSS for the contents, the window
+  // springs for the frame. Either alone is worse than neither, because it looks
+  // like the setting is broken rather than absent.
+  if (!/html\.reduce-motion/.test(read('renderer/shared/glass.css'))) {
+    problems.push('MOTION: glass.css has no html.reduce-motion rule; ui.reduceMotion cannot stop CSS');
+  }
+  for (const f of ['renderer/panel/panel.js', 'renderer/pill/pill.js']) {
+    if (!/reduce-motion/.test(read(f))) {
+      problems.push('MOTION: ' + f + ' never applies the reduce-motion class');
+    }
+  }
+  if (!/reduceMotion/.test(read('src/windows/manager.js'))) {
+    problems.push('MOTION: WindowManager ignores reduceMotion; the panel would still spring open');
+  }
+
+  if (!problems.some((p) => p.startsWith('MOTION:'))) {
+    ok.push('motion: ' + checked + ' transitions/animations, all on the shared vocabulary'
+      + ' (' + LOOPS.length + ' documented loops exempt)');
+  }
+}
+
 // ---------------------------------------------------------------- report
 const line = (s) => process.stdout.write(s + '\n');
 line('');

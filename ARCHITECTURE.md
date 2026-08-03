@@ -120,9 +120,38 @@ Measured:
 
 | preset | settle | overshoot | used for |
 |---|---|---|---|
-| `emerge` | 367ms | 1.40% | panel opening |
-| `resize` | 333ms | 0.00% | content growing/shrinking while open |
-| `collapse` | 208ms | 0.00% | available; panel close is immediate |
+| `emerge` | 325ms | 0.00% | panel opening |
+| `resize` | 308ms | 0.00% | content growing/shrinking while open |
+| `collapse` | 217ms | 0.00% | available; panel close is immediate |
+
+`emerge` used to be ζ = 0.776, overshooting 1.4% — 7.8px on a full-height open.
+That was deliberate "pop", and it was the one thing in the app that announced
+itself. Raising both k and ζ removed it *and* cut the settle from 383ms:
+overshoot is time spent travelling away from the target. Measured on the running
+app by polling `GetWindowRect` at 15ms through the open (`scripts` are not
+involved; the renderer cannot see this — `window.outerHeight` never changes,
+because bounds are set with a raw `SetWindowPos` that Blink never learns about,
+and `document.visibilityState` reads `visible` even while the window is hidden).
+
+### One vocabulary
+
+Two curves and three durations, defined once in `renderer/shared/glass.css`, and
+`npm run check` fails on any `transition`/`animation` in the three stylesheets
+carrying a raw duration or a raw timing function. Two indefinite loops are exempt
+by name and documented in place: the composer caret (a terminal convention, and
+a caret that eased would read as a rendering fault) and the pill's thinking
+breath (a loop the eye is meant to follow, not a state change it should barely
+catch).
+
+`ui.reduceMotion` has to be wired in two places because the app animates in two
+engines. `html.reduce-motion` in glass.css collapses every transition to 0.01ms
+and pins the two loops to a single pass; `WindowManager.setReduceMotion()`
+switches the height spring to `snapTo`, and `openPanel` places the window at its
+full height rather than drawing the collapsed frame first. Either half alone is
+worse than neither: a setting that quietens the panel's contents while the panel
+itself still springs open reads as broken rather than absent. 0.01ms rather than
+0: a zero duration makes some engines skip `transitionend` entirely, and anything
+waiting on that event to clean up never runs.
 
 > **Non-obvious result:** critically damped (ζ = 1.0) is *not* fastest to
 > settle. Its response carries a `(1 + ω₀t)` polynomial term alongside the

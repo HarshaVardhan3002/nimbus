@@ -50,7 +50,7 @@ body { width: 100%; }
   font-weight: 500;
   line-height: 1.4;
   box-shadow: 0 2px 10px rgba(0,120,212,0.30), inset 0 1px 0 rgba(255,255,255,0.18);
-  animation: riseIn 240ms var(--ease-decel) both;
+  animation: riseIn var(--t-slow) var(--ease-decel) both;
 }
 
 /* ---- turn wrapper: hosts the hover copy affordance ---- */
@@ -159,7 +159,7 @@ body { width: 100%; }
   margin: 2px 0;
   padding: 5px 0 5px 9px;
   border-left: 2px solid var(--stroke-hair);
-  animation: riseIn 220ms var(--ease-decel) both;
+  animation: riseIn var(--t-slow) var(--ease-decel) both;
 }
 .digest > summary {
   display: grid;
@@ -225,7 +225,7 @@ body { width: 100%; }
   margin: 6px 0;
   padding: 2px 0 2px 9px;
   border-left: 2px solid var(--stroke-rim);
-  animation: riseIn 220ms var(--ease-decel) both;
+  animation: riseIn var(--t-slow) var(--ease-decel) both;
 }
 .heard-tag {
   display: flex;
@@ -275,7 +275,7 @@ body { width: 100%; }
 .katex .katex-error { color: var(--danger); }
 
 /* Tokens fade in as they stream rather than appearing as a hard block. */
-.tok { animation: tokIn 200ms var(--ease-decel) both; }
+.tok { animation: tokIn var(--t-normal) var(--ease-decel) both; }
 @keyframes tokIn { from { opacity: 0; } to { opacity: 1; } }
 @keyframes riseIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
 
@@ -286,6 +286,9 @@ body { width: 100%; }
   margin-left: 2px;
   border-radius: 1px;
   background: var(--accent);
+  /* Off the shared vocabulary on purpose. A caret is a terminal convention with
+     its own tempo, and it must not ease: a fading caret reads as a rendering
+     fault. Hence step-end and a period nobody else uses. */
   animation: blink 1.05s step-end infinite;
 }
 @keyframes blink { 0%,50% { opacity: 1; } 50.01%,100% { opacity: 0; } }
@@ -300,7 +303,7 @@ body { width: 100%; }
   line-height: 1.45;
   -webkit-user-select: text;
   user-select: text;
-  animation: riseIn 200ms var(--ease-decel) both;
+  animation: riseIn var(--t-slow) var(--ease-decel) both;
 }
 .notice.show { display: block; }
 .notice.info  { background: rgba(76,194,255,0.12); border: 1px solid rgba(76,194,255,0.30); color: #B8E6FF; }
@@ -323,7 +326,7 @@ body { width: 100%; }
   background: var(--fill-1);
   font-size: 12.5px;
   line-height: 1.45;
-  animation: riseIn 200ms var(--ease-decel) both;
+  animation: riseIn var(--t-slow) var(--ease-decel) both;
 }
 .advice.hidden { display: none; }
 .advice-head {
@@ -459,7 +462,7 @@ body { width: 100%; }
   height: 100%;
   width: 0;
   background: var(--tx-dim);
-  transition: width var(--t-med) var(--ease-std), background-color var(--t-fast) var(--ease-std);
+  transition: width var(--t-normal) var(--ease-std), background-color var(--t-fast) var(--ease-std);
 }
 #ctx-rail[data-level="warm"] > i { background: var(--accent); }
 #ctx-rail[data-level="high"] > i { background: var(--warn); }
@@ -929,7 +932,7 @@ body { width: 100%; }
   color: var(--tx-2);
   text-align: left;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  transition: background-color 120ms linear, color 120ms linear;
+  transition: background-color var(--t-fast) var(--ease-std), color var(--t-fast) var(--ease-std);
 }
 #convo-title:hover { background: var(--bg-raise); color: var(--tx-1); }
 
@@ -970,7 +973,7 @@ body { width: 100%; }
   position: absolute; top: 7px; right: 7px;
   display: flex; gap: 2px;
   opacity: 0;
-  transition: opacity 120ms linear;
+  transition: opacity var(--t-fast) var(--ease-std);
 }
 .h-item:hover .h-tools, .h-item:focus-within .h-tools { opacity: 1; }
 .h-tools .icon-btn {

@@ -154,6 +154,19 @@ class WindowManager {
     this.loop = new SpringLoop(() => this._onSpringFrame());
     this.loop.add(this.heightSpring); // without this the loop has nothing to step
 
+    /**
+     * ui.reduceMotion, main-process half.
+     *
+     * CSS cannot reach this animation: the thing moving is the window, and it is
+     * driven by a spring integrated here. A reduce-motion setting that quietened
+     * the contents of the panel while the panel itself still sprang open would be
+     * the most conspicuous motion in the app left running.
+     *
+     * Kept as a flag rather than reading the store each frame: setPanelSize can
+     * fire on every token of a streaming reply.
+     */
+    this.reduceMotion = false;
+
     this.dragging = false;
     this.dragTimer = null;
     this.dragOffset = { x: 0, y: 0 };
@@ -849,9 +862,17 @@ class WindowManager {
     // lands during the open animation blends instead of restarting. Capped to
     // the display so tall content cannot push the window off-screen.
     const lay = this.panelLay || this._panelLayout();
-    this.heightSpring.setPreset('resize').setTarget(Math.min(nh, lay.avail));
+    const want = Math.min(nh, lay.avail);
+    // Still kicked after a snap: the loop is what places the window and what
+    // reinstates the region on settle, so skipping it would leave the bounds
+    // stale until something else moved them.
+    if (this.reduceMotion) this.heightSpring.snapTo(want);
+    else this.heightSpring.setPreset('resize').setTarget(want);
     this.loop.kick();
   }
+
+  /** See `reduceMotion` in the constructor. Called from the settings path. */
+  setReduceMotion(on) { this.reduceMotion = !!on; }
 
   // ------------------------------------------------------------- panel open/close
   openPanel({ focus = false } = {}) {
@@ -862,9 +883,12 @@ class WindowManager {
     // Open collapsed at the layout's position, then spring to the content height
     // the renderer asked for -- capped to what the display actually offers.
     const lay = this._panelLayout();
-    this._place(this.panel, lay.x, this._panelY(lay, PANEL.minH), lay.w, PANEL.minH);
-    this.heightSpring.snapTo(PANEL.minH);
-    this.heightSpring.setPreset('emerge').setTarget(Math.min(this.panelSize.h, lay.avail));
+    const want = Math.min(this.panelSize.h, lay.avail);
+    // Opening at the full height rather than at minH means the collapsed frame
+    // is never drawn, so reduced motion gets no flash of a one-row window.
+    this._place(this.panel, lay.x, this._panelY(lay, this.reduceMotion ? want : PANEL.minH), lay.w, this.reduceMotion ? want : PANEL.minH);
+    this.heightSpring.snapTo(this.reduceMotion ? want : PANEL.minH);
+    if (!this.reduceMotion) this.heightSpring.setPreset('emerge').setTarget(want);
 
     // Region is cleared for the duration of the animation and reinstated on
     // settle. Reapplying a GDI region every frame is ~120 syscalls/sec and any

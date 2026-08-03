@@ -333,6 +333,7 @@
     const prev = settings;
     settings = s;
     applyTheme(s);
+    applyMotion(s);
     if (!capture) return;
     capture.configure(s.audio || {});
 
@@ -369,11 +370,23 @@
     const t = (s && s.ui && s.ui.theme) || 'obsidian';
     document.documentElement.setAttribute('data-theme', t);
   }
+  /**
+   * The app's own reduced-motion switch. See the twin in panel.js.
+   *
+   * It matters more here than there: the pill's thinking breath is the one
+   * animation in Nimbus that runs indefinitely, and an indefinite animation in
+   * the corner of the screen is exactly what someone turning this on is trying
+   * to stop.
+   */
+  function applyMotion(s) {
+    document.documentElement.classList.toggle('reduce-motion', !!((s && s.ui) || {}).reduceMotion);
+  }
 
   // ---- boot ----------------------------------------------------------------
   (async function boot() {
     settings = await app.settingsGet();
     applyTheme(settings);
+    applyMotion(settings);
     app.on('glass:changed', ({ mode, systemCorners }) => applyGlassMode(mode, systemCorners));
     const nat = await app.nativeStatus();
     applyGlassMode(nat && nat.glass, nat && nat.systemCorners);
