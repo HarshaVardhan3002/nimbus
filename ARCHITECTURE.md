@@ -984,3 +984,51 @@ transcribe. `hintSystemAudio()` says so once, the first time listening starts,
 and records `audio.systemHinted` so it is a note rather than a nag. It points at
 the switch instead of throwing it — turning capture on by ourselves is the
 original mistake wearing a different hat.
+
+## 14. Packaging (`package.json` `build`, `build/installer.nsh`)
+
+The shipped artifact is one NSIS installer with everything the app needs inside
+it: the Electron runtime, the app, and the native modules. There is no
+prerequisite to install first, nothing to have on PATH, and no admin — `nsis`
+is configured `perMachine: false`, so it installs under the user's own profile
+and the app runs unelevated, which is what the "never take the foreground"
+principle needs anyway.
+
+Two things are deliberately *not* in the installer, and both are downloads the
+app makes on demand with the size shown and a cancel: the whisper.cpp
+transcription engine and its model, and the llama.cpp build and chat model
+behind the Simple tier. Bundling either would put 600 MB to 1 GB into a download
+that most users would never use all of, and pin a version we could not update
+without shipping a new installer.
+
+### 14.1 Only the binaries this platform can run
+
+`node_modules` carries native payloads for every platform its authors support.
+Left alone, `onnxruntime-node` contributes 259 MB and `koffi` 26 MB to a Windows
+x64 build, of which 62 MB and 1.6 MB respectively can ever execute — the rest is
+macOS, Linux, FreeBSD and arm64 code sitting in an installer that only targets
+Windows x64. The negations in `build.files` cut it.
+
+The loaders are direct-path (`build/koffi/win32_x64/koffi.node`,
+`bin/napi-v6/win32/x64/`), not directory scans, so removing the others is
+invisible to them. If a build for another architecture is ever wanted, these
+lines are the ones to relax.
+
+### 14.2 What still assumes something about the machine
+
+- **The installer is unsigned.** SmartScreen will interrupt the first run on any
+  machine that is not this one until the binary has enough reputation, or until
+  it is signed with a certificate tied to a real identity. Nothing in the build
+  can work around that, and nothing should try to.
+- **`onnxruntime-node` imports the Visual C++ 2015-2022 runtime**
+  (`vcruntime140.dll`, `msvcp140.dll` and friends), which is not part of a clean
+  Windows install. That module is only the *fallback* speaker-embedding backend:
+  `sherpa-onnx` is the primary and links its CRT statically, so it depends on
+  nothing outside Windows itself. `src/audio/speaker.js` never throws on either
+  failure — it reports `backend: 'none'` and the feature is absent rather than
+  the app being broken. A per-user installer cannot install a system runtime
+  without elevation, so this stays a graceful degradation rather than a
+  prerequisite.
+- **The speaker model is not in the repo or the build.** `models/*.onnx` is 28 MB
+  and gitignored; `modelPath()` looks in three places and returns null when it
+  finds nothing, which is the state of a stock checkout.
