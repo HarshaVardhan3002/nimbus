@@ -354,6 +354,18 @@ const DEFAULTS = {
      */
     advanced: false,
     /**
+     * Spell out the provider and model beside the tier indicator.
+     *
+     * Off, because the names are the longest thing in the composer and the least
+     * actionable: "Academic Cloud · deepseek-v4-flash" is most of a line telling
+     * a user something they cannot do anything with. What remains is a light --
+     * lit when the active tier can answer, dim when it cannot -- which is the
+     * part that was worth the room. The names are still one hover away, and one
+     * checkbox away for anyone running several endpoints who needs them on
+     * screen.
+     */
+    modelIndicator: false,
+    /**
      * WDA_EXCLUDEFROMCAPTURE. Named `privacy`, not `stealth`.
      *
      * The point is not hiding from a person; it is keeping a teleprompter

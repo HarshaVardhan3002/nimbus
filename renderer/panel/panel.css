@@ -552,6 +552,25 @@ body { width: 100%; }
 }
 .chip.subtle:hover { background: var(--fill-1); color: var(--tx-2); }
 
+/* ---- the model light ----
+   Named on request only, so by default this is a 6px dot with a hit area big
+   enough to click. It keeps the padding either way: the target must not move
+   when the names are switched on. */
+#model-chip { gap: 6px; }
+.model-dot {
+  width: 6px; height: 6px; flex: none;
+  border-radius: 50%;
+  background: var(--tx-dim);
+  transition: background var(--t-fast) var(--ease-std), box-shadow var(--t-fast) var(--ease-std);
+}
+/* Lit means the active tier can answer right now. Dim is not an error state --
+   it is the honest reading of a route with no key or no model behind it. */
+#model-chip.ready .model-dot {
+  background: #4CC2FF;
+  box-shadow: 0 0 6px rgba(76,194,255,0.55);
+}
+#model-chip:not(.named) #model-name { display: none; }
+
 /* ---- the reasoning ladder ----
    Three states, so the control has to say WHICH of three it is on rather than
    on/off. The three bars carry that at a glance; the word next to them says it

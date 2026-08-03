@@ -80,7 +80,9 @@
             <span class="tier-steps" aria-hidden="true"><i></i><i></i><i></i></span>
             <span id="tier-name">General</span>
           </button>
-          <button id="model-chip" class="chip subtle" title="Active model" aria-expanded="false"><span id="model-name">-</span></button>
+          <!-- A light, not a label. The dot is always there and always opens the
+               numbers; the names appear only when asked for in Settings. -->
+          <button id="model-chip" class="chip subtle" title="Active model" aria-expanded="false"><i class="model-dot" aria-hidden="true"></i><span id="model-name">-</span></button>
           <!-- The numbers behind the rail. Opened from the model chip, because
                that is where "which model, and how much room is left" belongs. -->
           <div id="ctx-pop" class="hidden" role="dialog" aria-label="Context usage">
@@ -563,6 +565,15 @@
             <input id="f-zoom" type="range" min="80" max="160" step="5" />
             <span id="zoom-val" class="s-hint"></span>
           </div>
+
+          <div class="s-label" data-adv>Model indicator</div>
+          <label class="s-check" data-adv>
+            <input id="f-model-indicator" type="checkbox" />
+            <span>Show the provider and model name
+              <em>Off, the composer carries only a light beside the tier: lit when the tier can
+                answer, dim when it cannot. The names are always in its tooltip, and clicking it
+                still opens the context numbers.</em></span>
+          </label>
 
           <div class="s-label">First run</div>
           <div class="s-row inline">

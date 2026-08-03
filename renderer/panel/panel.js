@@ -1435,6 +1435,7 @@
     $('#f-zoom').value = Math.round((ui.textZoom || 1) * 100);
     $('#zoom-val').textContent = Math.round((ui.textZoom || 1) * 100) + '%';
     $('#f-stealth').checked = !!ui.privacy;
+    $('#f-model-indicator').checked = !!ui.modelIndicator;
 
     const hcfg = settings.history || {};
     const ctx = typeof hcfg.contextTurns === 'number' ? hcfg.contextTurns : 12;
@@ -2172,6 +2173,16 @@
 
   $('#provider-search').addEventListener('input', renderProviders);
 
+  $('#f-model-indicator').addEventListener('change', async () => {
+    const on = $('#f-model-indicator').checked;
+    settings.ui = Object.assign({}, settings.ui, { modelIndicator: on });
+    await app.settingsSet({ ui: { modelIndicator: on } });
+    refreshModelChip();
+    // The composer changes width with the names in it, and the panel sizes
+    // itself to its content.
+    reportSize();
+  });
+
   $('#f-glass').addEventListener('change', async () => {
     settings.ui = Object.assign({}, settings.ui, { glass: $('#f-glass').value });
     await app.settingsSet({ ui: settings.ui });
@@ -2298,15 +2309,24 @@
     // Simple borrows General until a model ships in the box. Same rule as
     // providers.routeFor(); showing an empty chip here would describe a tier
     // that answers perfectly well as broken.
-    if (tier === 'simple' && !r.provider && !(r.model || '').trim()) r = routes.general || {};
+    if (tier === 'simple' && !(r.model || '').trim()) r = routes.general || {};
     const pid = r.provider || settings.provider;
     const p = providerList.find((x) => x.id === pid);
     const legacy = (settings.models && settings.models[pid]) || {};
     // The per-provider map is still the old two-entry shape, so anything below
     // Smart falls back to its `fast` entry.
     const name = (r.model || legacy[tier === 'smart' ? 'smart' : 'fast'] || '').trim() || '-';
+    const chip = $('#model-chip');
     $('#model-name').textContent = (p ? p.label + ' · ' : '') + name;
-    $('#model-chip').title = tier.toUpperCase() + ' tier → ' + (p ? p.label : pid) + ' / ' + name;
+    // The names are the optional half. The title carries them regardless, so
+    // turning the labels off costs a hover rather than the information.
+    chip.classList.toggle('named', !!(settings.ui || {}).modelIndicator);
+    // Readiness comes from the same verdict the indicator uses; deciding it here
+    // from the route would be the second copy of that rule.
+    const t = (tierState || []).find((x) => x.id === tier);
+    chip.classList.toggle('ready', !!(t && t.ready));
+    chip.title = tier.toUpperCase() + ' tier → ' + (p ? p.label : pid) + ' / ' + name
+      + (t && !t.ready ? ' — not ready. ' + (t.reason || '') : '');
   }
 
   async function reloadProviders() {
