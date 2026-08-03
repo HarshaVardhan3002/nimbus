@@ -204,6 +204,15 @@ const DEFAULTS = {
      * the choice this replaced -- there was no record of one.
      */
     systemChosen: false,
+    /**
+     * Whether we have already pointed at that switch once.
+     *
+     * Separate from systemChosen because they answer different questions: one
+     * is "did the user decide", the other is "did we tell them there was a
+     * decision to make". Skipping onboarding leaves the first false forever,
+     * and a hint that repeats every launch is a nag.
+     */
+    systemHinted: false,
     // Frame-level VAD. Values are in the 0..1 normalised-energy domain used by
     // renderer/vad-processor.js.
     vadThreshold: 0.010,

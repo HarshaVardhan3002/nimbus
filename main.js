@@ -250,6 +250,26 @@ function broadcast(channel, data) { if (wm) wm.broadcast(channel, data); }
 function toPanel(channel, data) { if (wm) wm.sendToPanel(channel, data); }
 function notify(message, level) { broadcast('status', { message, level: level || 'info' }); }
 
+/**
+ * Say once that system audio is not being transcribed.
+ *
+ * The default went from on to off, and onboarding is what asks for it back --
+ * but onboarding can be skipped, and an install that predates it is already
+ * past its first run. Both of those leave someone who used to get their calls
+ * transcribed with an app that quietly stopped doing it. Turning it back on by
+ * ourselves would be the original mistake again, so this points at the switch
+ * instead, at the one moment it is relevant: the first time they listen.
+ *
+ * Recorded on disk, so it is a note, not a nag. Answering the question either
+ * way in Settings or onboarding sets systemChosen and this never runs again.
+ */
+function hintSystemAudio() {
+  const a = store.getSettings().audio || {};
+  if (a.systemChosen || a.captureSystem || a.systemHinted) return;
+  store.setSettings({ audio: { systemHinted: true } });
+  notify('Nimbus is transcribing only you. Settings — Voice adds what plays through your speakers.');
+}
+
 // ------------------------------------------------------------ context budget
 /**
  * How much of the model's context window the conversation is using.
@@ -1603,6 +1623,7 @@ function registerIPC() {
     // A turn is now imminent; make sure the model is resident before the user
     // finishes their first sentence.
     if (active && warmth) warmth.poke();
+    if (active) hintSystemAudio();
     if (!active) {
       state.sttFailures = 0;
       state.sttMuted = false;

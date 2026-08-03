@@ -851,3 +851,11 @@ must always be reachable is the end.
 does not want it again tomorrow. The system-audio answer is recorded only if they
 reached the step that asks and moved past it, which is what `audio.systemChosen`
 means. Skip all leaves capture off and `systemChosen` false.
+
+That combination is a trap on its own: an install that predates onboarding is
+already past its first run, and Skip all walks straight past the question, so
+both end up with an app that silently stopped transcribing calls it used to
+transcribe. `hintSystemAudio()` says so once, the first time listening starts,
+and records `audio.systemHinted` so it is a note rather than a nag. It points at
+the switch instead of throwing it — turning capture on by ourselves is the
+original mistake wearing a different hat.
