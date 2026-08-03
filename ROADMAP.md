@@ -44,6 +44,8 @@ stops it doing anything with audio that they did not ask for.
 
 ## Sprint 1: bugs on the floor, consent, defaults, onboarding
 
+**Shipped.** `c02c8cc`, `84fbc16`, `4531e24`, `169a104`.
+
 Why: `captureSystem` defaults to true, so the first time a user turns listening
 on, everything coming out of their speakers is transcribed. That is defensible
 only if they were asked. They are not asked, because there is nothing to ask
@@ -102,6 +104,8 @@ bugs above are gone; and `onboarded` survives a restart.
 
 ## Sprint 2: the tier indicator, the chip, the glass, the motion
 
+**Shipped.** `a7eee7b`, `16a3d6e`, `738feb6`, `bef39b0`.
+
 Why: `#smart` is a single-purpose toggle that says nothing about what it is
 toggling between. The provider and model names take a lot of room to tell most
 users nothing they can act on.
@@ -139,6 +143,20 @@ The release where Nimbus is useful on a machine that has nothing else, and where
 the model stops being limited to what it memorised.
 
 ## Sprint 3: the Simple tier gets its own model
+
+**Shipped.** `2b8392a`. `src/local/{catalog,engine}.js`, with the plumbing both
+engines needed lifted into `src/artifacts.js`. The model comparison the sprint
+asked for is in `LOCAL-MODELS.md`; the design is in ARCHITECTURE.md §4.2.
+Measured on this machine: installed model answers in ~200 ms, unloads 250 ms
+after a provider connects, and reloads in about a second when the tier is asked
+again.
+
+Two things the sprint did not anticipate, both found by running it rather than
+reading it. llama-server sets `Access-Control-Allow-Origin: *`, so a loopback
+bind keeps other machines out but not web pages; every launch now mints a bearer
+token and passes it as `--api-key`. And llama-server no longer prints the backend
+banner the whisper engine matches on, so the accelerator is probed with
+`--list-devices` instead of read off the log.
 
 Why: the promise is intelligence regardless of hardware. Today a user with no
 provider and no local server has an app that cannot answer anything.
@@ -275,13 +293,20 @@ sleeping, locking, display changes — without a restart or a visible seam.
 
 These block work in the sprint named, and are the user's call.
 
-1. **Simple-tier model** (Sprint 3). Which family, and is a download of that size
-   acceptable on first run, or does the Simple tier stay empty until asked for?
-2. **Search backend** (Sprint 4). A keyless default that is fragile, or a
+1. **Search backend** (Sprint 4). A keyless default that is fragile, or a
    key-based service that is reliable but asks the user for an account?
-3. **Retrieval default** (Sprint 4). Off until switched on, or on for the
+2. **Retrieval default** (Sprint 4). Off until switched on, or on for the
    General and Smart tiers with a clear indicator?
-4. **Tier naming** (Sprint 2). Simple, General and Smart as written here, or
-   something that reads less like a pricing table.
-5. **System-audio migration** (Sprint 1). Re-ask everybody, or only profiles that
-   never made an explicit choice?
+
+## Settled
+
+- **Simple-tier model** (Sprint 3). Qwen2.5 0.5B Instruct Q4_K_M, 379 MB down
+  and 542 MB resident, with Qwen2.5 1.5B offered to machines with 12 GB or more
+  and Gemma 3 1B available but never auto-selected, because a hardware probe
+  result is not consent to a bespoke licence. Nothing is downloaded on first run:
+  the tier borrows General until somebody presses Start. `LOCAL-MODELS.md`.
+- **Tier naming** (Sprint 2). Simple, General and Smart, as written here.
+- **System-audio migration** (Sprint 1). Everybody is re-asked. Every existing
+  file had `captureSystem` true because that was the default and nothing recorded
+  whether it was chosen, so there was no deliberate choice to preserve -- only an
+  assumption to stop making. Schema v8 turns it off and onboarding asks once.
