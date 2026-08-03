@@ -42,31 +42,63 @@ made harder to finish in order to make a later port easier.
 The release that makes Nimbus explicable to somebody who has never seen it, and
 stops it doing anything with audio that they did not ask for.
 
-## Sprint 1: consent, defaults, onboarding
+## Sprint 1: bugs on the floor, consent, defaults, onboarding
 
 Why: `captureSystem` defaults to true, so the first time a user turns listening
 on, everything coming out of their speakers is transcribed. That is defensible
 only if they were asked. They are not asked, because there is nothing to ask
-them with.
+them with. Three defects sit on the same surfaces and are cleared first.
 
-Work:
+### Bugs
+
+- The pill's menu stays open when the chat is expanded. Opening the panel is a
+  different intent; the menu should close with it.
+- With the chat open, the menu opens *behind* the panel and cannot be reached
+  without collapsing the panel first. Both windows are topmost at the same
+  level, so the later one wins; the pill has to be raised while its menu is out.
+- The model is blind unless the user picks "My screen". Vision is a capability,
+  not a mode: when the routed model is known to accept images, a typed question
+  carries the screen by default, with a setting to turn that off and the
+  known-blind case still falling through to the vision route. This reverses a
+  deliberate earlier decision, so the reasons it was made — latency, upload cost,
+  rejected requests on text-only models — are handled rather than ignored: only a
+  model *proven* to see triggers it, and unknown stays opt-in.
+
+### Consent and defaults
 
 - Flip `audio.captureSystem` to default false and gate it behind an explicit
   choice. `listenOnLaunch` is already false and stays that way.
 - Add a migration in `src/store.js` that does not silently turn off system audio
   for people who deliberately enabled it, but does re-ask anyone who never chose.
-- Build the onboarding flow as a first-run panel state, not a separate window.
-  The window manager already owns two windows and should not grow a third.
-- Four steps, no more: what Nimbus is; what it listens to and when, with the
-  system-audio choice made here; where its intelligence comes from (the tier
-  picker from Sprint 2); the shortcuts it will use.
-- Set `onboarded` at the end, and add a "run this again" entry in settings.
-- Onboarding must be completable on a machine with no provider configured and no
-  network. If it cannot, the whole premise is broken.
+
+### Onboarding, in two stages
+
+Stage one is setup, and it runs before the tutorial because most people expect
+an app to work out of the box rather than to be configured into working:
+
+- A list of what Nimbus wants to install, ticked by default, each sized against
+  the hardware probe: the transcription model (`src/whisper`, chosen by
+  `src/hardware.js`), and — once Sprint 3 lands — the Simple-tier model chosen
+  the same way. Everything installs under the user's own profile, so no
+  elevation is needed; if a path ever does need it, ask before touching it.
+- The screen waits, visibly, while they download and install, with progress and
+  a working cancel. Nothing else in the app is blocked by it.
+- Unticking is allowed and explained: Nimbus still runs, with that piece missing.
+
+Stage two is the tutorial: what Nimbus is, what it listens to and when (the
+system-audio choice is made here), where its intelligence comes from, and the
+shortcuts it will use. Every step skippable, and a Skip All for people who do not
+want it. Set `onboarded` at the end, and add a "run this again" entry in
+settings.
+
+Both stages are panel states, not a third window. The window manager owns two
+windows and should not grow another. Both must be completable on a machine with
+no provider configured and no network — a failed download is a message, not a
+dead end.
 
 Done when: a fresh profile reaches a usable app without reading any
-documentation; system audio is never captured until a human said yes; and
-`onboarded` survives a restart.
+documentation; system audio is never captured until a human said yes; the three
+bugs above are gone; and `onboarded` survives a restart.
 
 ## Sprint 2: the tier indicator, the chip, the glass, the motion
 

@@ -270,6 +270,24 @@ const DEFAULTS = {
     maxTokens: 4096
   },
 
+  vision: {
+    /**
+     * Send the screen with a typed question when the model can actually see it.
+     *
+     * On, because a model that accepts images and is not given one is blind for
+     * no reason: the user asks about the error in front of them and has to be
+     * told to press a separate button first. The cost this used to carry --
+     * uploading a screenshot to a text-only model and getting a rejected request
+     * back -- is gone, because the attachment happens only where the model's
+     * vision support is KNOWN (see providers.visionFor). Unknown means nothing
+     * is attached.
+     *
+     * Off sends the screen only where the user asked for it by name: the "My
+     * screen" action, Assist and Solve.
+     */
+    autoAttach: true
+  },
+
   ui: {
     // The pill always launches centred on the top edge of the primary display.
     // A drag moves it for the session and is deliberately not remembered.

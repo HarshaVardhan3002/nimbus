@@ -1387,6 +1387,8 @@
     $('#f-maxtok').value = mt;
     $('#maxtok-val').textContent = fmtTokens(mt);
 
+    $('#f-vision-auto').checked = ((settings.vision || {}).autoAttach !== false);
+
     // Was called twice, once under a name that does not exist. The undefined
     // call threw before the two rows above ever ran, so the context slider sat
     // at its markup default no matter what was saved.
@@ -1557,6 +1559,12 @@
     applyAdvanced(on);
     settings.ui = Object.assign({}, settings.ui, { advanced: on });
     await app.settingsSet({ ui: { advanced: on } });
+  });
+
+  $('#f-vision-auto').addEventListener('change', async () => {
+    const on = $('#f-vision-auto').checked;
+    settings.vision = Object.assign({}, settings.vision, { autoAttach: on });
+    await app.settingsSet({ vision: settings.vision });
   });
 
   $('#f-needskey').addEventListener('change', async () => {

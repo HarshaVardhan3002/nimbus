@@ -19,7 +19,7 @@ const { createEngine } = require('./src/whisper/engine');
 const catalog = require('./src/whisper/catalog');
 const { createLLM, testConnection } = require('./src/llm');
 const {
-  MODES, DIGEST, buildDigest, splitDigest, looksDegenerate,
+  MODES, AMBIENT_SCREEN, DIGEST, buildDigest, splitDigest, looksDegenerate,
   COMPACT, buildCompact, parseCompact, compactPrefill, heardPrefill
 } = require('./src/prompts');
 const { estimateTurns, measureRatio, blendRatio } = require('./src/tokens');
@@ -1001,6 +1001,37 @@ async function runFeature(mode, userText) {
 
     let imageDataUrl = null;
     let activeLLM = llm;
+    let ambientScreen = false;
+
+    // Returns null on success, else the reason. The reason is reported only on
+    // the path where the user asked for the screen; see autoScreen below.
+    const grabScreen = async () => {
+      try {
+        imageDataUrl = await captureScreenshot();
+        return imageDataUrl ? null : 'Screen capture returned nothing.';
+      } catch (e) {
+        return 'Screen capture failed: ' + ((e && e.message) || e);
+      }
+    };
+
+    /**
+     * The screen as ambient context.
+     *
+     * Vision is a capability, not a mode: a model that can see should see,
+     * without the user having to route the question through a separate action.
+     * Silent in both directions -- attached only on a model PROVEN to accept
+     * images, skipped without comment on one that is blind or merely unknown,
+     * because this is not a screen question and a warning about an image nobody
+     * asked for is noise. `vision.autoAttach` turns it off.
+     */
+    const autoScreen = !def.needsScreen
+      && !!def.mayUseScreen
+      && ((settings.vision || {}).autoAttach !== false);
+
+    if (autoScreen && (await learnCapabilities(llm.provider, llm.model)) === true) {
+      ambientScreen = (await grabScreen()) === null;
+      if (ambientScreen) log('screen attached to a typed question for', llm.model);
+    }
 
     if (def.needsScreen) {
       /**
@@ -1034,12 +1065,8 @@ async function runFeature(mode, userText) {
         notify('"' + activeLLM.model + '" cannot accept images, so no screenshot was attached. '
           + 'Set a Vision route in Settings to send screen questions to a model that can see.', 'warn');
       } else {
-        try {
-          imageDataUrl = await captureScreenshot();
-          if (!imageDataUrl) notify('Screen capture returned nothing.', 'warn');
-        } catch (e) {
-          notify('Screen capture failed: ' + ((e && e.message) || e), 'warn');
-        }
+        const why = await grabScreen();
+        if (why) notify(why, 'warn');
       }
     }
 
@@ -1087,7 +1114,7 @@ async function runFeature(mode, userText) {
      * against a compacted context without restating every handler.
      */
     const streamOnce = (sendTurns) => activeLLM.stream({
-      system: def.system,
+      system: def.system + (ambientScreen ? AMBIENT_SCREEN : ''),
       turns: sendTurns,
       imageDataUrl,
       signal: abortController.signal,

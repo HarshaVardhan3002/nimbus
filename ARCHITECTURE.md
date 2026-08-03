@@ -218,10 +218,20 @@ answer every time, silently.
 `routes.vision` remains as an explicit hand-off for the case where the chat
 model genuinely cannot see and screen questions should go elsewhere.
 
-Typed questions never carry a screenshot at all (`MODES.ask.needsScreen` is
-`false`). They used to, which meant every self-contained question paid for a
-capture and — on a text-only route — produced a rejection banner about an image
-the user never asked to send.
+Typed questions are the third case: `MODES.ask` declares `mayUseScreen` rather
+than `needsScreen`. The screenshot is attached only when the routed model's
+vision support is *known* true and `vision.autoAttach` is on (the default), and
+the attachment is silent in both directions — no hand-off, no warning, no
+capture at all on a blind or merely unknown model. `AMBIENT_SCREEN` is appended
+to the system prompt when it happens, so the model treats the image as context
+rather than as the question.
+
+The three-way split exists because both failure modes are real. Attaching to
+everything, as the app once did, made every self-contained question pay for a
+capture and produced a rejection banner on a text-only route about an image the
+user never asked to send. Attaching to nothing, which replaced it, left a
+vision-capable model blind while the user looked at the thing they were asking
+about.
 
 ---
 

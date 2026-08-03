@@ -305,6 +305,11 @@
 
   // ---- events from main ----------------------------------------------------
   app.on('panel:state', ({ open }) => {
+    // Showing the conversation is a different intent from the menu that was
+    // open over it, and the panel covers the menu anyway. Either way round --
+    // the chevron, the shortcut, or main opening the panel by itself -- the
+    // menu goes with it.
+    if (open) openMenu(false);
     toggleBtn.classList.toggle('open', open);
     toggleBtn.setAttribute('aria-expanded', String(open));
     toggleBtn.title = open ? 'Hide chat  (Ctrl+Shift+Space)' : 'Show chat  (Ctrl+Shift+Space)';

@@ -124,17 +124,24 @@ const MODES = {
 
   ask: {
     /**
-     * Typed questions do NOT capture the screen.
+     * A typed question never REQUIRES the screen, but takes it when it is free.
      *
-     * They used to. Every question, however self-contained, paid for a full
-     * screenshot: slower first token, a large image uploaded to whichever
-     * provider is configured, and -- on any text-only model -- a rejected
-     * request plus a warning banner about a screenshot the user never asked to
-     * send. Sending the screen to a third party should be a deliberate act, and
-     * it already has three deliberate entry points: the "My screen" action,
-     * Assist, and Solve.
+     * The distinction is what makes both halves work. `needsScreen` means the
+     * mode is meaningless without an image, so a blind model is worth a warning
+     * and a hand-off to the vision route. `mayUseScreen` means the image is
+     * context: attached silently when the routed model is PROVEN to accept one
+     * and `vision.autoAttach` is on, skipped silently otherwise.
+     *
+     * This mode used to attach nothing at all, because attaching to everything
+     * cost a screenshot on every self-contained question -- slower first token,
+     * a large upload, and on a text-only model a rejected request plus a banner
+     * about an image the user never asked to send. Those costs are real, so
+     * they are paid for by the capability check rather than by leaving the model
+     * blind: a user asking "what is this error" with the error on screen should
+     * not have to tell a model that can see to look.
      */
     needsScreen: false,
+    mayUseScreen: true,
     userBubble: null, // the typed text becomes the bubble
     small: false,
     system:
@@ -512,8 +519,21 @@ function heardPrefill(text) {
   }];
 }
 
+/**
+ * Appended to the system prompt when a screenshot rode along that the user did
+ * not ask about.
+ *
+ * Without it, a model handed an image assumes the image is the question, and
+ * answers "what is a monad" with a description of the editor it happens to be
+ * open in. The image is context; this says so.
+ */
+const AMBIENT_SCREEN =
+  ' A screenshot of the user\'s screen is attached as background context, not as the subject of '
+  + 'the question. Use it only where it helps answer what was actually asked, and do not describe '
+  + 'it or mention that it is there unless the question is about it.';
+
 module.exports = {
-  MODES, formatTranscript,
+  MODES, AMBIENT_SCREEN, formatTranscript,
   DIGEST, buildDigest, splitDigest, looksDegenerate,
   COMPACT, COMPACT_SECTIONS, buildCompact, parseCompact, compactPrefill,
   heardPrefill

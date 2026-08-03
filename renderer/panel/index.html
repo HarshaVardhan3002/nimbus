@@ -184,6 +184,19 @@
           </div>
 
           <!--
+            Deliberately NOT behind data-adv. This decides whether a picture of
+            the user's screen leaves the machine with an ordinary typed
+            question, which is not a developer detail.
+          -->
+          <label class="s-check">
+            <input id="f-vision-auto" type="checkbox" />
+            <span>Let the model see my screen
+              <em>Sends a screenshot with typed questions, but only to a model already known to
+                accept images. Off, the screen goes only where you ask for it: My screen, Assist
+                and Solve.</em></span>
+          </label>
+
+          <!--
             A fallback for one case only: your chat model cannot see and you
             want screen questions answered anyway. Nimbus now detects capability
             per model, so the common setup never needs this.

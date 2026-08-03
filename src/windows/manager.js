@@ -750,6 +750,11 @@ class WindowManager {
    * The pill's menu renders below the pill, outside its bounds. The window is
    * clipped to the pill's exact shape, so it has to grow to contain the menu
    * or the menu is simply cut off.
+   *
+   * The grown window also has to be raised. Both windows are topmost, and the
+   * panel was created second, so the menu opened underneath an open panel with
+   * no way to reach it short of closing the chat. See win32.raiseToTop() for
+   * why this cannot be done through Electron.
    */
   setMenuOpen(open, rect) {
     this.menuOpen = !!open;
@@ -759,8 +764,15 @@ class WindowManager {
     if (!open) {
       this._place(this.pill, b.x, b.y, this.pillSize.w, this.pillSize.h);
       if (this._regionMode()) this._applyRegion(this.pill, PILL.radius);
+      // Hand the top of the band back, so the panel is not left under the pill
+      // for the rest of the session.
+      if (this.panel && !this.panel.isDestroyed() && this.panel.isVisible()) {
+        win32.raiseToTop(this.panel);
+      }
       return;
     }
+
+    win32.raiseToTop(this.pill);
 
     const m = this._menuRect(rect);
     const w = Math.max(this.pillSize.w, Math.ceil(m.x + m.w));

@@ -65,6 +65,15 @@ const SWP_NOZORDER = 0x0004;
 const SWP_NOACTIVATE = 0x0010;
 const SWP_FRAMECHANGED = 0x0020;
 
+/**
+ * hwndInsertAfter for "top of the always-on-top band". MSDN types it as HWND,
+ * which is -1; the binding takes uintptr_t, so it is the all-ones pointer for
+ * this build rather than a negative number.
+ */
+const HWND_TOPMOST = process.arch === 'ia32' || process.arch === 'arm'
+  ? 0xFFFFFFFFn
+  : 0xFFFFFFFFFFFFFFFFn;
+
 // SetWindowDisplayAffinity modes.
 const WDA_NONE = 0x00000000;
 const WDA_MONITOR = 0x00000001;            // captures as a black rectangle
@@ -426,6 +435,34 @@ function excludeFromAltTab(win) {
 }
 
 /**
+ * Put this window at the top of the always-on-top band, without activating it.
+ *
+ * The pill and the panel are both alwaysOnTop at the same level, so the one
+ * created later -- the panel -- paints over the other. That is right almost
+ * always, and wrong for exactly one thing: the pill's menu, which opens under
+ * the panel and cannot be clicked while it is there.
+ *
+ * Electron cannot express this. setAlwaysOnTop's `level` and `relativeLevel`
+ * arguments are macOS-only, so on Windows both windows land on the same
+ * HWND_TOPMOST band whatever is passed. moveTop() exists but activates.
+ *
+ * SWP_NOACTIVATE is the whole point: raising must not take the foreground, or
+ * the user loses the caret in whatever they were typing in -- the one thing
+ * this app promises not to do.
+ */
+function raiseToTop(win) {
+  if (!available) return false;
+  const hwnd = hwndOf(win);
+  if (hwnd === null) return false;
+  try {
+    return !!SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0,
+      SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE);
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Capture protection, applied AND verified.
  *
  * SetWindowDisplayAffinity is the deepest mechanism a user-mode process has for
@@ -610,6 +647,7 @@ module.exports = {
   disableBlur,
   setRoundedRegion,
   setUnionRegion,
+  raiseToTop,
   clearRegion,
   disableSystemCorners,
   excludeFromAltTab,
