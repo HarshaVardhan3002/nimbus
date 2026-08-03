@@ -719,6 +719,24 @@ function sttSettings() {
   return { ...s, stt: { ...cfg, localBaseURL: st.endpoint, localModel: 'whisper-1' } };
 }
 
+/**
+ * The engine object, without starting anything.
+ *
+ * Constructing it only works out where the build and the models live, which is
+ * what makes it safe to do from engine:status: onboarding has to be able to say
+ * "already installed" on a launch where nothing has started the server yet.
+ */
+function engineHandle() {
+  if (!engine) {
+    engine = createEngine({
+      userDataDir: app.getPath('userData'),
+      log: (m) => console.log('[nimbus] ' + m)
+    });
+    engine.on((st) => broadcast('stt:engine', st));
+  }
+  return engine;
+}
+
 async function startEngine({ force = false, reprobe = false } = {}) {
   const s = store.getSettings();
   const cfg = s.stt || {};
@@ -729,13 +747,7 @@ async function startEngine({ force = false, reprobe = false } = {}) {
     return null;
   }
 
-  if (!engine) {
-    engine = createEngine({
-      userDataDir: app.getPath('userData'),
-      log: (m) => console.log('[nimbus] ' + m)
-    });
-    engine.on((st) => broadcast('stt:engine', st));
-  }
+  engineHandle();
 
   const report = await hardware.probe({ userDataDir: app.getPath('userData'), force: reprobe });
   engineDecision = hardware.classify(report);
@@ -1385,12 +1397,13 @@ function registerIPC() {
    */
   ipcMain.handle('engine:status', async () => {
     const s = store.getSettings();
+    const eng = engineHandle();
     return {
-      status: engine ? engine.status() : { phase: 'idle', running: false },
+      status: eng.status(),
       decision: engineDecision,
       hardware: engineDecision ? hardware.describe(engineDecision) : '',
       choice: engineChoice(s),
-      installed: engine ? await engine.installed() : { builds: [], models: [], saved: {} },
+      installed: await eng.installed(),
       options: catalog.options()
     };
   });
@@ -1764,6 +1777,22 @@ app.whenReady().then(() => {
    */
   setTimeout(() => wm.centerPill(), 300);
 
+  /**
+   * A first run opens onto onboarding by itself.
+   *
+   * Nobody discovers a pill on the top edge of their screen and guesses that
+   * clicking it is what sets the thing up, so the panel is shown for them. It
+   * comes up unfocused like every other open: it should not steal the caret out
+   * of whatever they were doing when the installer finished. The renderer picks
+   * the view -- it is already on the onboarding one -- so this only decides that
+   * the window is visible.
+   *
+   * After centring, so it does not open against the seed position.
+   */
+  if (!store.getSettings().onboarded) {
+    setTimeout(() => { if (wm) wm.openPanel({ focus: false }); }, 600);
+  }
+
   warmth = new WarmthKeeper({
     getSettings: () => store.getSettings(),
     onEvent: (ch, data) => broadcast(ch, data)
@@ -1815,7 +1844,13 @@ app.whenReady().then(() => {
    * that happens. Every later launch finds both on disk and only starts the
    * server, which is a couple of seconds.
    */
-  setTimeout(() => { startEngine().catch(() => {}); }, 2000);
+  setTimeout(() => {
+    // Not before the user has been asked. On a first run this call is what
+    // downloads the model, and onboarding is the thing doing the asking; it
+    // installs through engine:install when they say yes.
+    if (!store.getSettings().onboarded) return;
+    startEngine().catch(() => {});
+  }, 2000);
 });
 
 app.on('will-quit', () => {

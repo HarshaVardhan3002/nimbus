@@ -770,6 +770,7 @@
     $('#view-chat').classList.toggle('hidden', name !== 'chat');
     $('#view-history').classList.toggle('hidden', name !== 'history');
     $('#view-settings').classList.toggle('hidden', name !== 'settings');
+    $('#view-onboard').classList.toggle('hidden', name !== 'onboard');
     if (name === 'settings') renderSettings();
     if (name === 'history') renderHistory();
     reportSize();
@@ -1803,7 +1804,7 @@
       + (fam.id === 'crisper' ? ' · other languages fall back to Whisper automatically' : '');
   }
 
-  app.on('stt:engine', (s) => paintEngine(s));
+  app.on('stt:engine', (s) => { paintEngine(s); obPaintEngine(s); });
 
   $('#f-engine-manage').addEventListener('change', async () => {
     const engine = Object.assign({}, (settings.stt || {}).engine, { manage: $('#f-engine-manage').checked });
@@ -2339,6 +2340,208 @@
     if (e.ctrlKey && e.key === ',') { e.preventDefault(); showSettings(true); }
   });
 
+  // ---- onboarding ----------------------------------------------------------
+  /**
+   * First run, in two stages: install, then explain.
+   *
+   * Install goes first because the tour is a tour of an app that cannot yet
+   * hear anything until the speech model is on disk, and because "it works when
+   * you open it" is what people expect of a thing they just installed. The
+   * explaining is second and every step of it is skippable.
+   *
+   * Neither stage may require a provider, a key or a network. A download that
+   * fails says so and the run continues; the only thing that must always be
+   * reachable is the end.
+   */
+  const TOUR_STEPS = 4;
+  let tourStep = 0;
+  let sysAnswered = false;
+  let installing = false;
+
+  function obShowStage(name) {
+    $('#ob-setup').classList.toggle('hidden', name !== 'setup');
+    $('#ob-tour').classList.toggle('hidden', name !== 'tour');
+    $('#ob-title').textContent = name === 'setup' ? 'Setting up Nimbus' : 'Welcome to Nimbus';
+    reportSize();
+  }
+
+  /** What the speech model will cost, in this machine's terms. */
+  async function obDescribeStt() {
+    try {
+      /**
+       * The probe has not run yet on a first launch: startEngine is what
+       * normally runs it, and that is held back until this stage says yes.
+       * Without it 'auto' resolves to the CPU fallback, so the machine would be
+       * offered the smallest model on the slowest build and told that is what
+       * it is getting.
+       */
+      let info = await app.engineStatus();
+      if (!info.hardware) {
+        await app.engineProbe();
+        info = await app.engineStatus();
+      }
+      const opts = info.options || {};
+      const choice = info.choice || {};
+      const build = (opts.builds || []).find((b) => b.id === choice.build);
+      const model = (opts.models || []).find((m) => m.id === choice.model || m.id === choice.modelTier);
+      const mb = (build && build.approxMB || 0) + (model && model.approxMB || 0);
+      /**
+       * Installed means *this* choice is installed. A machine with some other
+       * tier on disk still has a download in front of it, and saying otherwise
+       * would hide it behind a button labelled Continue.
+       */
+      const saved = (info.installed || {}).saved || {};
+      const already = saved.model === choice.modelTier
+        && (saved.build === choice.build || saved.wanted === choice.build)
+        && (saved.family === choice.family || saved.wantedFamily === choice.family);
+      // Only the machine half of the probe line. What it decided is already said
+      // in plain words beside the tick box; "-> vulkan build, turbo-q5 model" is
+      // for the Voice settings, where the ids are the things you pick from.
+      $('#ob-hw').textContent = String(info.hardware || '').split('->')[0].replace(/[,\s]+$/, '');
+      $('#ob-stt-note').textContent = already
+        ? 'Already installed. Runs on this machine; recordings never leave it.'
+        : (model ? model.label + ' on ' + (build ? build.label : 'this machine') : 'Chosen for this machine')
+          + (mb ? ' · about ' + (mb >= 1024 ? (mb / 1024).toFixed(1) + ' GB' : mb + ' MB') : '')
+          + ' · runs here, so recordings never leave the machine.';
+      if (already) $('#ob-install').textContent = 'Continue';
+    } catch {
+      // A probe that failed is not a reason to block the first run.
+      $('#ob-stt-note').textContent = 'Chosen for this machine when you install it.';
+    }
+    reportSize();
+  }
+
+  function obPaintEngine(s) {
+    if ($('#view-onboard').classList.contains('hidden')) return;
+    $('#ob-status').textContent = engineLine(s);
+    const bar = $('#ob-bar');
+    const p = s && s.progress;
+    bar.classList.toggle('hidden', !p);
+    if (p) bar.querySelector('i').style.width = Math.round(100 * p.done / (p.total || p.done || 1)) + '%';
+    reportSize();
+  }
+
+  function obPaintTour() {
+    $$('#ob-tour .ob-step').forEach((el) => {
+      el.classList.toggle('hidden', Number(el.dataset.step) !== tourStep);
+    });
+    $('#ob-dots').innerHTML = Array.from({ length: TOUR_STEPS }, (_, i) =>
+      '<i class="' + (i === tourStep ? 'on' : '') + '"></i>').join('');
+    $('#ob-back').classList.toggle('hidden', tourStep === 0);
+    $('#ob-next').textContent = tourStep === TOUR_STEPS - 1 ? 'Start using Nimbus' : 'Next';
+    reportSize();
+  }
+
+  function obPaintKeys() {
+    const s = settings.shortcuts || {};
+    const rows = [
+      [s.toggle || 'Control+Shift+Space', 'Show and hide this chat'],
+      [s.talk || 'Control+Alt+Space', 'Hold to talk'],
+      [s.listen || 'Control+Shift+L', 'Start and stop listening'],
+      [s.assist || 'Control+Return', 'Answer what is on screen right now']
+    ];
+    $('#ob-keys').innerHTML = rows
+      .map(([k, what]) => '<li><kbd>' + esc(k.replace(/\+/g, ' + ')) + '</kbd><span>' + esc(what) + '</span></li>')
+      .join('');
+  }
+
+  /**
+   * The end of onboarding, from wherever it was reached.
+   *
+   * `onboarded` is set on every exit, including Skip all: a user who dismissed
+   * this does not want it again tomorrow. The system-audio answer is recorded
+   * only if they actually saw the question and moved past it -- skipping is not
+   * consent, so systemChosen stays false and the setting stays off.
+   */
+  async function finishOnboarding(then) {
+    const patch = { onboarded: true };
+    if (sysAnswered) {
+      patch.audio = { captureSystem: $('#ob-sys').checked, systemChosen: true };
+    }
+    settings = Object.assign({}, settings, patch);
+    if (patch.audio) settings.audio = Object.assign({}, settings.audio, patch.audio);
+    try { await app.settingsSet(patch); } catch { /* the view still has to close */ }
+    showView(then === 'settings' ? 'settings' : 'chat');
+  }
+
+  function startOnboarding() {
+    tourStep = 0;
+    sysAnswered = false;
+    $('#ob-sys').checked = (settings.audio || {}).captureSystem === true;
+    // A re-run starts from where the last one left the engine, rather than
+    // proposing an install to someone who already said no to it.
+    $('#ob-stt').checked = ((settings.stt || {}).engine || {}).manage !== false;
+    $('#ob-status').textContent = '';
+    $('#ob-bar').classList.add('hidden');
+    $('#ob-install').textContent = 'Install and continue';
+    $('#ob-install').disabled = false;
+    $('#ob-later').disabled = false;
+    obShowStage('setup');
+    obPaintTour();
+    obPaintKeys();
+    showView('onboard');
+    obDescribeStt();
+  }
+
+  /**
+   * Saying no now means no, not later.
+   *
+   * The managed engine downloads itself a couple of seconds into every launch,
+   * so leaving it on after someone declined would hand them the download
+   * tomorrow without asking again. Off it goes; Settings — Voice turns it back
+   * on, and the tour's last step says where that is.
+   */
+  async function obSkipStt() {
+    await obManage(false);
+    obShowStage('tour');
+  }
+
+  async function obManage(on) {
+    const engine = Object.assign({}, (settings.stt || {}).engine, { manage: on });
+    settings.stt = Object.assign({}, settings.stt, { engine });
+    try { await app.settingsSet({ stt: { engine: { manage: on } } }); }
+    catch { /* the run has to continue either way */ }
+  }
+
+  $('#ob-install').addEventListener('click', async () => {
+    if (installing) return;
+    if (!$('#ob-stt').checked) { obSkipStt(); return; }
+    installing = true;
+    $('#ob-install').disabled = true;
+    $('#ob-later').disabled = true;
+    $('#ob-status').textContent = 'Starting…';
+    try {
+      // Undoes a previous run's "not now": engine:install is a no-op while the
+      // engine is unmanaged.
+      await obManage(true);
+      obPaintEngine(await app.engineInstall({}));
+    } catch (e) {
+      // Named, not swallowed, and not fatal: Settings — Voice can retry it.
+      $('#ob-status').textContent = ((e && e.message) || String(e))
+        + ' — you can try again in Settings, under Voice.';
+    }
+    installing = false;
+    $('#ob-install').disabled = false;
+    $('#ob-later').disabled = false;
+    obShowStage('tour');
+  });
+
+  $('#ob-later').addEventListener('click', () => obSkipStt());
+  $('#ob-skip-all').addEventListener('click', () => finishOnboarding());
+  $('#ob-back').addEventListener('click', () => { tourStep = Math.max(0, tourStep - 1); obPaintTour(); });
+  $('#ob-sys').addEventListener('change', () => { sysAnswered = true; });
+  $('#ob-open-settings').addEventListener('click', () => finishOnboarding('settings'));
+  $('#ob-next').addEventListener('click', () => {
+    // Moving past the listening step is an answer to it, whichever way the box
+    // is set. Going back and not returning is not.
+    if (tourStep === 1) sysAnswered = true;
+    if (tourStep >= TOUR_STEPS - 1) { finishOnboarding(); return; }
+    tourStep += 1;
+    obPaintTour();
+  });
+
+  $('#ob-rerun').addEventListener('click', () => startOnboarding());
+
   /** Keep CSS geometry in agreement with whoever is drawing the frame. */
   function applyGlassMode(mode, systemCorners) {
     const r = document.documentElement;
@@ -2406,6 +2609,12 @@
     try { paintContext(await app.contextUsage()); } catch { /* no route configured yet */ }
 
     syncPlaceholder();
+
+    // Last, so the first run opens onto onboarding rather than flashing the
+    // chat it is about to cover. Everything above has to have run first: the
+    // tour reads the shortcuts and the panel's own height from it.
+    if (!settings.onboarded) startOnboarding();
+
     reportSize();
   })();
 })();

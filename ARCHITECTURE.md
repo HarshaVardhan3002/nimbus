@@ -803,3 +803,51 @@ cannot remember beats an assistant that will not start.
 The JSON folder is imported once, into an empty database only, so a later launch
 cannot duplicate it. The folder is then renamed to `history.imported` rather than
 deleted — if the import got something wrong, the originals are still there.
+
+---
+
+## 13. First run
+
+`settings.onboarded` gates two things in `main.js`: the panel is opened
+unfocused a moment after launch, and the deferred `startEngine()` is **skipped**.
+The renderer opens onto `#view-onboard` for the same reason. Everything else
+about the app behaves normally underneath it.
+
+### 13.1 Why the engine start is held back
+
+The managed engine downloads a build and a model two seconds into every launch.
+On a first run that is several hundred megabytes pulled before the user has been
+told it is happening — and onboarding exists to tell them. So the automatic
+start waits for `onboarded`, and the setup stage's own button is what installs,
+through `engine:install`.
+
+Declining is remembered as `stt.engine.manage = false`, not as "ask again
+tomorrow": otherwise the next launch would start the download they just refused.
+Settings — Voice turns it back on, and the setup stage restores its tick box
+from the same flag, so a re-run does not re-propose what was already declined.
+
+`engine:status` therefore has to answer before anything has started, which is
+why the engine object is constructed lazily by `engineHandle()` — constructing
+it only resolves paths. Without that, a machine with the model already on disk
+was told it had a download ahead of it.
+
+### 13.2 Two stages
+
+**Setup** sizes itself against the hardware probe. The probe normally runs inside
+`startEngine()`, which is exactly the thing being held back, so the stage runs it
+itself through `engine:probe` when `hardware` comes back empty — otherwise
+`'auto'` resolves to its CPU fallback and the machine is offered the smallest
+model on the slowest build, and *told* that is what it is getting. Installed
+means this exact choice is installed: build, tier and weights family all matched
+against `state.json`, because some other tier on disk is still a download.
+
+**Tour** is four steps, each skippable, with Skip all in the header throughout.
+Neither stage may require a provider, a key or a network; the only thing that
+must always be reachable is the end.
+
+### 13.3 Skipping is not consent
+
+`onboarded` is set on every exit, including Skip all — someone who dismissed this
+does not want it again tomorrow. The system-audio answer is recorded only if they
+reached the step that asks and moved past it, which is what `audio.systemChosen`
+means. Skip all leaves capture off and `systemChosen` false.

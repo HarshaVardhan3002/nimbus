@@ -791,6 +791,75 @@ body { width: 100%; }
 }
 .ghost-btn .ic { display: inline-flex; }
 
+/* ============================ onboarding ============================ */
+/* Seen once, so it borrows the settings vocabulary rather than inventing a
+   second one: same checkboxes, same footer, same hint colour. The only new
+   shapes are the ones a first run needs and settings does not. */
+.ob-stage.hidden { display: none; }
+.ob-lead { margin: 2px 0 12px; font-size: 12.5px; color: var(--tx-2); line-height: 1.5; }
+.ob-locked { opacity: 0.55; cursor: default; }
+
+.ob-step h3 {
+  margin: 2px 0 8px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--tx-1);
+}
+.ob-step p { margin: 0 0 9px; font-size: 12.5px; color: var(--tx-2); line-height: 1.5; }
+.ob-step.hidden { display: none; }
+
+.ob-keys { margin: 0; padding: 0; list-style: none; }
+.ob-keys li {
+  display: flex; align-items: baseline; gap: 10px;
+  margin-bottom: 7px;
+  font-size: 12.5px;
+  color: var(--tx-2);
+}
+.ob-keys kbd {
+  flex: none;
+  min-width: 130px;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--tx-1);
+}
+
+/* Progress through the tour, as position rather than as a number. Four steps
+   is few enough that "3 of 4" is arithmetic nobody needs to do. */
+.ob-dots { display: inline-flex; gap: 5px; align-items: center; }
+.ob-dots i {
+  width: 5px; height: 5px;
+  border-radius: 50%;
+  background: var(--fill-2);
+}
+.ob-dots i.on { background: var(--accent); }
+
+/* Nothing in either footer wraps: a hardware line long enough to squeeze the
+   buttons broke "Not now" across two lines. */
+.ob-stage .s-foot .ghost-btn, .ob-btn { white-space: nowrap; }
+/* Dimmed while a download holds the stage, like the primary button beside it:
+   a button that ignores clicks should look like one. */
+.ob-stage .s-foot .ghost-btn[disabled] { opacity: 0.5; pointer-events: none; }
+.ob-btn {
+  padding: 7px 13px;
+  border-radius: var(--r-ctl);
+  border: 1px solid var(--stroke-rim);
+  color: var(--tx-1);
+  font-size: 12px;
+  font-weight: 500;
+}
+.ob-btn:hover { border-color: var(--accent); }
+/* The same blue as the settings Apply button. --accent is white on the dark
+   theme and black on the light one, so filling with it would need a second
+   rule per theme to keep the label readable; this reads the same in both. */
+.ob-btn.primary {
+  background: linear-gradient(180deg, #38B6F5, var(--accent-deep));
+  border-color: transparent;
+  color: #fff;
+  font-weight: 600;
+}
+.ob-btn.primary:hover { filter: brightness(1.09); }
+.ob-btn[disabled] { opacity: 0.5; pointer-events: none; }
+
 /* ============================ chat header ============================ */
 /* One row: which conversation you are in, and the two verbs that apply to it. */
 #chat-head {

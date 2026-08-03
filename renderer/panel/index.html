@@ -112,6 +112,99 @@
       </footer>
     </section>
 
+    <!-- =========================== onboarding view ========================= -->
+    <!--
+      First run, in two stages.
+
+      Stage one installs, because an app that works out of the box is the
+      expectation and a tour of a thing that cannot yet transcribe is a tour of
+      nothing. Stage two explains, and every step of it can be skipped: the
+      people who want to be shown around and the people who want to be left
+      alone are both real, and only one of them should be made to click.
+
+      A panel state, not a third window. The window manager owns two and should
+      not grow another for a screen seen once.
+    -->
+    <section id="view-onboard" class="view hidden">
+      <header class="s-head">
+        <div class="s-title" id="ob-title">Welcome to Nimbus</div>
+        <button id="ob-skip-all" class="ghost-btn small">Skip all</button>
+      </header>
+
+      <div id="ob-setup" class="ob-stage">
+        <p class="ob-lead">
+          Nimbus listens and transcribes on this machine. One download makes that work offline;
+          it goes in your own user folder and needs no administrator rights.
+        </p>
+
+        <label class="s-check">
+          <input id="ob-stt" type="checkbox" checked />
+          <span>Speech recognition
+            <em id="ob-stt-note">Sizing this to your hardware…</em></span>
+        </label>
+
+        <!-- Present, disabled and honest about why. A tick box that quietly does
+             nothing is worse than a line saying the feature is not here yet. -->
+        <label class="s-check ob-locked">
+          <input id="ob-simple" type="checkbox" disabled />
+          <span>Built-in model
+            <em>Answers with no provider and no network. Not in this release — there is
+              nothing to download yet.</em></span>
+        </label>
+
+        <div class="ctx-bar hidden" id="ob-bar"><i></i></div>
+        <div id="ob-status" class="s-hint"></div>
+
+        <footer class="s-foot">
+          <span id="ob-hw" class="s-hint"></span>
+          <div class="spacer"></div>
+          <button id="ob-later" class="ghost-btn small">Not now</button>
+          <button id="ob-install" class="ob-btn primary">Install and continue</button>
+        </footer>
+      </div>
+
+      <div id="ob-tour" class="ob-stage hidden">
+        <div class="ob-step" data-step="0">
+          <h3>It stays out of your way</h3>
+          <p>The pill sits at the top of your screen and never takes the keyboard: type into
+            Nimbus and the caret stays wherever you left it. Drag the pill to move it.</p>
+          <p class="s-hint">Ctrl+Shift+Space shows and hides this chat.</p>
+        </div>
+
+        <div class="ob-step hidden" data-step="1">
+          <h3>What it listens to</h3>
+          <p>Your microphone is push-to-talk: it opens while you hold Ctrl+Alt+Space, and at no
+            other time.</p>
+          <label class="s-check">
+            <input id="ob-sys" type="checkbox" />
+            <span>Also transcribe what plays through my speakers
+              <em>Calls, meetings and video. Other people's voices included, so this is off until
+                you say otherwise. Changeable any time in Settings — Voice.</em></span>
+          </label>
+        </div>
+
+        <div class="ob-step hidden" data-step="2">
+          <h3>Where the answers come from</h3>
+          <p id="ob-route">Nimbus talks to a model you choose — one running on this machine, or a
+            provider you hold the key to.</p>
+          <p class="s-hint">Nothing is sent anywhere until you ask a question.</p>
+          <button id="ob-open-settings" class="ob-btn">Choose a model</button>
+        </div>
+
+        <div class="ob-step hidden" data-step="3">
+          <h3>The four keys worth knowing</h3>
+          <ul id="ob-keys" class="ob-keys"></ul>
+        </div>
+
+        <footer class="s-foot">
+          <span id="ob-dots" class="ob-dots"></span>
+          <div class="spacer"></div>
+          <button id="ob-back" class="ghost-btn small">Back</button>
+          <button id="ob-next" class="ob-btn primary">Next</button>
+        </footer>
+      </div>
+    </section>
+
     <!-- ============================ settings view ========================== -->
     <section id="view-settings" class="view hidden">
       <header class="s-head">
@@ -442,6 +535,13 @@
             <input id="f-zoom" type="range" min="80" max="160" step="5" />
             <span id="zoom-val" class="s-hint"></span>
           </div>
+
+          <div class="s-label">First run</div>
+          <div class="s-row inline">
+            <button id="ob-rerun" class="ghost-btn small">Show the introduction again</button>
+          </div>
+          <div class="s-hint">What Nimbus listens to, where its answers come from, and the
+            shortcuts — plus the speech model download, if you skipped it.</div>
 
           <div id="native-status" class="s-hint" data-adv></div>
           <div id="build-status" class="s-hint" data-adv></div>
