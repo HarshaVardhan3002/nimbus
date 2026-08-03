@@ -90,6 +90,11 @@ html[data-theme='obsidian'] {
   --line-firm: rgba(255, 255, 255, 0.17);
   --top-light: rgba(255, 255, 255, 0.16);
 
+  /* The scrim under text runs. See ".legible" below for why it exists and
+     scripts/check.js for the contrast figures these two numbers have to hold. */
+  --scrim:      rgba(9, 9, 11, 0.55);
+  --scrim-firm: rgba(9, 9, 11, 0.18);
+
   --accent:    rgba(255, 255, 255, 0.95);
   --accent-on: #09090B;
   --shadow: 0 12px 40px rgba(0,0,0,0.55), 0 2px 10px rgba(0,0,0,0.40);
@@ -106,11 +111,19 @@ html[data-theme='porcelain'] {
 
   --tx-1:   rgba(0, 0, 0, 0.90);
   --tx-2:   rgba(0, 0, 0, 0.58);
-  --tx-3:   rgba(0, 0, 0, 0.38);
+  /* 0.46, not the 0.38 this started at. Black at 0.38 over a near-white surface
+     is ~2.6:1 whatever the scrim does -- the scrim moves the surface, and here
+     the surface is already the light end. Placeholders and hints were the only
+     text in the app failing the contrast floor, in the theme meant for bright
+     rooms. */
+  --tx-3:   rgba(0, 0, 0, 0.46);
 
   --line:      rgba(0, 0, 0, 0.10);
   --line-firm: rgba(0, 0, 0, 0.16);
   --top-light: rgba(255, 255, 255, 0.85);
+
+  --scrim:      rgba(250, 250, 252, 0.62);
+  --scrim-firm: rgba(250, 250, 252, 0.20);
 
   --accent:    rgba(0, 0, 0, 0.90);
   --accent-on: #FFFFFF;
@@ -198,6 +211,47 @@ html.no-native .glass {
   -webkit-backdrop-filter: blur(20px) saturate(120%);
   box-shadow: inset 0 1px 0 var(--top-light);
 }
+
+/* ------------------------------------------------------------- legibility */
+/**
+ * A scrim under the text runs, not over the whole window.
+ *
+ * Rule 4 at the top of this file says text wins over translucency, and until
+ * now the only thing enforcing it was the surface alpha -- one number for the
+ * whole window, chosen against a dark desktop. Over a white document or a bright
+ * video the same 0.66 leaves body text at a contrast ratio that depends entirely
+ * on what the user happens to have open behind us, which is not a property an
+ * interface is allowed to have.
+ *
+ * `.legible` puts a second layer between the desktop and the words: it darkens
+ * (or in porcelain, lightens) and blurs whatever is behind, locally, so the
+ * composite under text has a guaranteed floor in every glass mode. The blur is
+ * the distortion half -- it destroys the high-frequency detail that makes text
+ * over a photo unreadable even when the average contrast looks fine.
+ *
+ * The figures are checked, not eyeballed: scripts/check.js composites these
+ * tokens over white, black, mid grey and a saturated colour and fails the build
+ * below WCAG AA. Changing --scrim without running it is how this silently stops
+ * working.
+ *
+ * In shaped and fallback modes the surface is already 0.92, so the scrim there
+ * is the smaller --scrim-firm: enough to hold the floor, not enough to turn a
+ * translucent window into a slab.
+ */
+.legible { position: relative; isolation: isolate; }
+.legible::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  background: var(--scrim);
+  backdrop-filter: blur(8px) saturate(105%);
+  -webkit-backdrop-filter: blur(8px) saturate(105%);
+  pointer-events: none;
+}
+html.shaped .legible::before,
+html.no-native .legible::before { background: var(--scrim-firm); }
 
 /* DWM rounds the frame itself at ~8px in backdrop modes; match it. */
 html.system-corners .glass { border-radius: 8px !important; }

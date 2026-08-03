@@ -314,6 +314,110 @@ ok.push('registry: all built-in providers present in both registry and store def
   ok.push('storage: SQL and the sqlite driver are confined to src/db.js');
 }
 
+// ------------------------------------------------- 7c. text contrast
+/**
+ * Is the text still readable over somebody else's desktop?
+ *
+ * A translucent window has no fixed background, so "does this look fine" is a
+ * question about whatever the author happened to have open. This composites the
+ * real tokens -- surface over backdrop, scrim over surface, text over that --
+ * against four deliberately hostile backdrops and applies WCAG AA.
+ *
+ * It reads glass.css rather than duplicating the numbers, so moving a token
+ * moves the test with it. If this fails, the fix is the token, not the test.
+ */
+{
+  const css = read('renderer/shared/glass.css');
+
+  const rgba = (s) => {
+    const m = /rgba?\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)(?:[,\s/]+([\d.]+))?\s*\)/.exec(s);
+    return m ? { r: +m[1], g: +m[2], b: +m[3], a: m[4] === undefined ? 1 : +m[4] } : null;
+  };
+  // Tokens are declared per theme, so the block has to be sliced before the
+  // lookup: a plain search finds obsidian's copy every time.
+  const block = (name) => {
+    const i = css.indexOf(name);
+    return i < 0 ? '' : css.slice(i, css.indexOf('}', i));
+  };
+  const tok = (scope, name) => {
+    const m = new RegExp('--' + name + ':\\s*([^;]+);').exec(scope);
+    return m ? rgba(m[1]) : null;
+  };
+
+  // src over dst, both straight alpha, dst opaque.
+  const over = (src, dst) => ({
+    r: src.a * src.r + (1 - src.a) * dst.r,
+    g: src.a * src.g + (1 - src.a) * dst.g,
+    b: src.a * src.b + (1 - src.a) * dst.b,
+    a: 1
+  });
+  const lum = (c) => {
+    const f = (v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); };
+    return 0.2126 * f(c.r) + 0.7152 * f(c.g) + 0.0722 * f(c.b);
+  };
+  const ratio = (a, b) => {
+    const [hi, lo] = [lum(a), lum(b)].sort((x, y) => y - x);
+    return (hi + 0.05) / (lo + 0.05);
+  };
+
+  const BACKDROPS = [
+    ['white document', { r: 255, g: 255, b: 255, a: 1 }],
+    ['black video', { r: 0, g: 0, b: 0, a: 1 }],
+    ['mid grey', { r: 128, g: 128, b: 128, a: 1 }],
+    ['saturated brand colour', { r: 255, g: 214, b: 0, a: 1 }]
+  ];
+  // tx-3 is placeholders and dim hints, held to the large-text floor rather than
+  // the body-text one; it is never the only copy of anything.
+  const FLOORS = { 'tx-1': 4.5, 'tx-2': 4.5, 'tx-3': 3.0 };
+
+  const themes = [
+    ['obsidian', block("html[data-theme='obsidian']")],
+    ['porcelain', block("html[data-theme='porcelain']")]
+  ];
+  // Both glass modes matter: the translucent one is the weak case, the shaped
+  // one is the default.
+  const MODES = [['glass', 'bg-glass', 'scrim'], ['shaped', 'bg-solid', 'scrim-firm']];
+
+  let worst = { ratio: Infinity, where: '' };
+  for (const [themeName, scope] of themes) {
+    for (const [modeName, surfaceTok, scrimTok] of MODES) {
+      const surface = tok(scope, surfaceTok);
+      const scrim = tok(scope, scrimTok);
+      if (!surface || !scrim) {
+        problems.push('CONTRAST: ' + themeName + ' is missing --' + surfaceTok + ' or --' + scrimTok);
+        continue;
+      }
+      for (const [txName, floor] of Object.entries(FLOORS)) {
+        const text = tok(scope, txName);
+        if (!text) { problems.push('CONTRAST: ' + themeName + ' is missing --' + txName); continue; }
+        for (const [bdName, bd] of BACKDROPS) {
+          const under = over(scrim, over(surface, bd));
+          const r = ratio(over(text, under), under);
+          const where = themeName + '/' + modeName + ' ' + txName + ' over ' + bdName;
+          if (r < worst.ratio) worst = { ratio: r, where };
+          if (r < floor) {
+            problems.push('CONTRAST: ' + where + ' is ' + r.toFixed(2) + ':1, below the '
+              + floor + ':1 floor — raise --' + scrimTok + ' for ' + themeName);
+          }
+        }
+      }
+    }
+  }
+  if (Number.isFinite(worst.ratio)) {
+    ok.push('contrast: worst text/background pair is ' + worst.ratio.toFixed(2) + ':1 ('
+      + worst.where + ')');
+  }
+
+  // The scrim only does anything where it is actually mounted.
+  const legibleUsers = ['renderer/panel/index.html', 'renderer/pill/index.html']
+    .filter((f) => /class="[^"]*\blegible\b/.test(read(f)));
+  if (legibleUsers.length < 2) {
+    problems.push('CONTRAST: the .legible scrim is not applied in '
+      + ['renderer/panel/index.html', 'renderer/pill/index.html']
+        .filter((f) => !legibleUsers.includes(f)).join(', '));
+  }
+}
+
 // ---------------------------------------------------------------- report
 const line = (s) => process.stdout.write(s + '\n');
 line('');
