@@ -142,7 +142,9 @@ function resolve(settings, id) {
 
   const keys = settings.apiKeys || {};
   const rawKey = (keys[p.id] || '').trim();
-  const tier = settings.smart ? 'smart' : 'fast';
+  // The per-provider fields predate routes and still carry the old two names,
+  // so the three tiers fold back onto them: anything below Smart reads `fast`.
+  const tier = activeTier(settings) === 'smart' ? 'smart' : 'fast';
   const models = (settings.models || {})[p.id] || {};
   const model = (models[tier] || p.defaults[tier] || '').trim();
 
@@ -186,7 +188,7 @@ function resolve(settings, id) {
 /**
  * Routes: one provider AND model per reasoning tier.
  *
- * The old shape was a single global `settings.provider`, with `smart` choosing
+ * The old shape was a single global `settings.provider`, with a boolean choosing
  * between a fast/smart pair INSIDE that provider. That makes the app
  * provider-bound: you could not run a small local model for quick answers and
  * a large cloud model for hard ones, which is the obvious setup for anyone who
@@ -194,31 +196,58 @@ function resolve(settings, id) {
  *
  * A route is `{ provider, model }`. Tiers are fully independent, so:
  *
- *     fast  -> ollama        / llama3.2          (622ms warm, local, private)
- *     smart -> anthropic     / claude-sonnet-5   (slower, far more capable)
+ *     simple  -> (in the box)   / small local model  (1.4.0; borrows General now)
+ *     general -> ollama         / llama3.2           (622ms warm, local, private)
+ *     smart   -> anthropic      / claude-sonnet-5    (slower, far more capable)
  *
  * This also sidesteps the single-slot reload problem measured in warmth.js: if
  * the two tiers live on DIFFERENT servers, toggling between them costs nothing,
  * because neither server has to evict anything.
  */
-const TIERS = ['fast', 'smart'];
+const TIERS = ['simple', 'general', 'smart'];
+
+/** What each tier is called on screen, and what picking it means. */
+const TIER_LABELS = {
+  simple: 'Simple',
+  general: 'General',
+  smart: 'Smart'
+};
 
 /**
  * Every routable slot, including the optional vision hand-off.
  *
- * TIERS is the fast/smart PAIR the Smart toggle switches between; 'vision' is
- * not one of those, but it is a route and has to resolve like one. Keeping the
- * two lists separate is what was missing: `createLLM(settings, 'vision')` fell
- * through to the provider-id branch, looked for a provider literally called
- * "vision", found none, and crashed -- so the vision hand-off in main.js could
- * never fire.
+ * TIERS is the ladder the indicator cycles through; 'vision' is not one of
+ * those, but it is a route and has to resolve like one. Keeping the two lists
+ * separate is what was missing: `createLLM(settings, 'vision')` fell through to
+ * the provider-id branch, looked for a provider literally called "vision",
+ * found none, and crashed -- so the vision hand-off in main.js could never fire.
  */
-const ROUTE_TIERS = ['fast', 'smart', 'vision'];
+const ROUTE_TIERS = [...TIERS, 'vision'];
+
+/** The tier currently answering. Anything unrecognised means General. */
+function activeTier(settings) {
+  const t = settings && settings.tier;
+  return TIERS.includes(t) ? t : 'general';
+}
 
 function routeFor(settings, tier) {
-  const t = ROUTE_TIERS.includes(tier) ? tier : (settings && settings.smart ? 'smart' : 'fast');
+  const t = ROUTE_TIERS.includes(tier) ? tier : activeTier(settings);
   const routes = (settings && settings.routes) || {};
-  const r = routes[t] || {};
+  let r = routes[t] || {};
+  /**
+   * Simple borrows General until it has a model of its own.
+   *
+   * The tier is a promise about how much thinking is applied, not about which
+   * binary is running, and the floor of that promise has to exist on a machine
+   * where nothing is configured yet. An unset Simple route therefore answers
+   * from General rather than being an unpickable tier that reports itself
+   * broken. 1.4.0 fills it in and this fallback stops mattering.
+   *
+   * The MODEL decides, not the provider: a Simple route naming a provider but
+   * no model would otherwise fall through to that provider's own default entry,
+   * which is a different model from General's and nobody asked for it.
+   */
+  if (t === 'simple' && !(r.model || '').trim()) r = routes.general || {};
   return { tier: t, provider: r.provider || null, model: (r.model || '').trim() };
 }
 
@@ -261,6 +290,53 @@ function resolveTier(settings, tier) {
 }
 
 /**
+ * The three tiers, and whether each one is available yet.
+ *
+ * Tiers are earned, not hidden. A user with nothing configured can still see
+ * that General and Smart exist and read one sentence saying what would turn
+ * them on -- which is the difference between an app that looks limited and an
+ * app that looks broken.
+ *
+ * Simple is never locked: routeFor() falls back to General, and 1.4.0 gives it
+ * a model that needs no configuration at all. General wants any working route.
+ * Smart wants its own route to be working, because that is the whole point of
+ * a tier you step up to; falling back to the same model as General would make
+ * the step a lie.
+ */
+function tiers(settings) {
+  const active = activeTier(settings);
+  const general = resolveTier(settings, 'general');
+  const smart = resolveTier(settings, 'smart');
+  const anyReady = (general && general.ready) || (smart && smart.ready);
+
+  const state = {
+    simple: { unlocked: true, reason: null },
+    general: {
+      unlocked: !!anyReady,
+      reason: 'Connect a provider or a local server in Settings.'
+    },
+    smart: {
+      unlocked: !!(smart && smart.ready),
+      reason: (smart && smart.reason) || 'Set a model for the Smart tier in Settings.'
+    }
+  };
+
+  return TIERS.map((id) => {
+    const r = resolveTier(settings, id);
+    return {
+      id,
+      label: TIER_LABELS[id],
+      active: id === active,
+      unlocked: state[id].unlocked,
+      reason: state[id].unlocked ? null : state[id].reason,
+      provider: r ? r.id : null,
+      model: r ? r.model : null,
+      ready: !!(r && r.ready)
+    };
+  });
+}
+
+/**
  * Which model would compress this conversation, and whether it is a step up.
  *
  * Compaction decides what every later answer is built on, so running it on a
@@ -268,9 +344,9 @@ function resolveTier(settings, tier) {
  * than a free win. It is still better than the silent truncation it replaces, so
  * this reports rather than refuses and the caller decides.
  *
- * `distinct` compares the two TIERS, not the compressor against whatever happens
- * to be answering right now. With the Smart toggle on, the smart model is both
- * the answerer and the compressor, and that is the best case rather than a
+ * `distinct` compares General against Smart, not the compressor against whatever
+ * happens to be answering right now. With Smart selected, the smart model is
+ * both the answerer and the compressor, and that is the best case rather than a
  * degraded one -- comparing those two would flag it as "one model" and warn
  * about the strongest configuration the user can have.
  *
@@ -279,7 +355,7 @@ function resolveTier(settings, tier) {
  * and two models on one provider are two models.
  */
 function compactorFor(settings) {
-  const fast = resolveTier(settings, 'fast');
+  const general = resolveTier(settings, 'general');
   const smart = resolveTier(settings, 'smart');
 
   if (!smart || !smart.ready) {
@@ -292,7 +368,7 @@ function compactorFor(settings) {
     };
   }
 
-  const same = !!fast && fast.id === smart.id && fast.model === smart.model;
+  const same = !!general && general.id === smart.id && general.model === smart.model;
 
   return {
     ok: true,
@@ -733,7 +809,8 @@ async function discoverModels(settings, id, { timeoutMs = 6000, force = false } 
 
 module.exports = {
   BUILTIN, BUILTIN_ORDER, NO_KEY, OPENAI_COMPATIBLE,
-  list, get, labelOf, resolve, resolveTier, routeFor, TIERS, ROUTE_TIERS,
+  list, get, labelOf, resolve, resolveTier, routeFor, activeTier, tiers,
+  TIERS, TIER_LABELS, ROUTE_TIERS,
   capabilityKey, modelInfoFor, visionFor, contextWindowFor, contextBudgetFor,
   charsPerTokenFor, learnModel, compactorFor, INFO_RANK, WINDOW_RANK,
   discoverModels, clearDiscoveryCache, classifyModel, readContextWindow, readModalities, httpHint

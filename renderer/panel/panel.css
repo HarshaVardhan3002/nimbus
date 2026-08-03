@@ -552,6 +552,35 @@ body { width: 100%; }
 }
 .chip.subtle:hover { background: var(--fill-1); color: var(--tx-2); }
 
+/* ---- the reasoning ladder ----
+   Three states, so the control has to say WHICH of three it is on rather than
+   on/off. The three bars carry that at a glance; the word next to them says it
+   outright, and the two never disagree because both are painted from the same
+   index. */
+.chip.tier { gap: 7px; }
+.tier-steps { display: inline-flex; align-items: flex-end; gap: 2px; height: 10px; }
+.tier-steps i {
+  width: 3px;
+  border-radius: 1px;
+  background: var(--tx-dim);
+  transition: height var(--t-fast) var(--ease-std), background var(--t-fast) var(--ease-std);
+}
+.tier-steps i:nth-child(1) { height: 4px; }
+.tier-steps i:nth-child(2) { height: 7px; }
+.tier-steps i:nth-child(3) { height: 10px; }
+/* Filled up to the active rung. Unreached bars stay, dim: the ladder's length
+   is part of the information, so hiding them would hide that there is a step up. */
+.chip.tier i.lit { background: currentColor; }
+.chip.tier[data-tier="general"] { color: var(--tx-1); }
+.chip.tier[data-tier="smart"] {
+  border-color: rgba(76,194,255,0.5);
+  background: var(--accent-soft);
+  color: #A9E2FF;
+}
+/* A locked rung is still shown and still says why in its title -- tiers are
+   earned, not hidden -- so the cue is a dashed rim, not a disabled control. */
+.chip.tier.locked { border-style: dashed; }
+
 .send {
   width: 30px; height: 30px;
   border-radius: 50%;
@@ -670,10 +699,15 @@ body { width: 100%; }
   display: flex; align-items: center; gap: 8px; margin-bottom: 5px;
 }
 .route-tier {
-  width: 52px; flex: none;
+  /* Wide enough for GENERAL at this weight and tracking; the old 52px clipped
+     it, and a truncated tier name in the one place tiers are configured is the
+     worst place to save six pixels. */
+  width: 62px; flex: none;
   font-size: 11px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase;
   color: var(--tx-mut);
 }
+/* The ladder climbs in brightness: dim floor, plain middle, lit top. */
+.route-tier.simple { color: var(--tx-dim); }
 .route-tier.smart { color: #A9E2FF; }
 .route-row select {
   flex: 0 0 40%; min-width: 0;

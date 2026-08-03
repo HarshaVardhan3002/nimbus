@@ -45,7 +45,7 @@ function adoptLegacy() {
   }
 }
 
-const SCHEMA = 8;
+const SCHEMA = 9;
 
 const DEFAULTS = {
   schema: SCHEMA,
@@ -53,15 +53,29 @@ const DEFAULTS = {
   // Legacy single-provider selection. Kept so an un-migrated file still
   // resolves, but `routes` is authoritative.
   provider: 'ollama',
-  smart: false,
+
+  /**
+   * Which reasoning tier is answering: 'simple' | 'general' | 'smart'.
+   *
+   * Replaces the `smart` boolean, which could only say more or less and never
+   * what of. Three named levels say what the app is doing without the user
+   * having to know which model is behind each one. See providers.tiers().
+   */
+  tier: 'general',
 
   /**
    * Per-tier routing. Each reasoning level binds its OWN provider and model,
    * so the app is not bound to one provider. See providers.resolveTier().
    */
   routes: {
-    fast:  { provider: 'ollama', model: '' },
-    smart: { provider: 'ollama', model: '' },
+    /**
+     * The floor. Empty until 1.4.0 ships a model in the box; until then Simple
+     * resolves to the General route, which is why it is a tier the user can
+     * always pick rather than one that can be broken by configuration.
+     */
+    simple:  { provider: '', model: '' },
+    general: { provider: 'ollama', model: '' },
+    smart:   { provider: 'ollama', model: '' },
     /**
      * Optional. Used ONLY when a request carries an image and the active tier's
      * model cannot accept one. Lets a text-only chat model stay selected while
@@ -481,6 +495,30 @@ function load() {
     if (disk.shortcuts) delete disk.shortcuts.quit;
     // v3: stealth (WDA_EXCLUDEFROMCAPTURE) went from always-on to opt-in.
     if (disk.ui) delete disk.ui.stealth;
+  }
+
+  /**
+   * v9: two tiers become three, and the boolean becomes a name.
+   *
+   * `fast` was never a description of what a model does -- it described how long
+   * the answer takes, which is the one thing the user can already see. That
+   * route keeps its provider and model and is renamed `general`; `simple` is
+   * added empty, because there is nothing to put in it until a model ships in
+   * the box. The Smart toggle's position carries over: it was the only thing
+   * that ever recorded which tier was answering.
+   *
+   * Last, not in schema order like the blocks above it. This one renames a key
+   * the v4 block creates, so running it in descending order would rename
+   * nothing and then have `fast` reappear underneath it.
+   */
+  if (from < 9) {
+    if (!isPlainObject(disk.routes)) disk.routes = {};
+    if (!isPlainObject(disk.routes.general) && isPlainObject(disk.routes.fast)) {
+      disk.routes.general = disk.routes.fast;
+    }
+    delete disk.routes.fast;
+    if (typeof disk.tier !== 'string') disk.tier = disk.smart ? 'smart' : 'general';
+    delete disk.smart;
   }
 
   /**

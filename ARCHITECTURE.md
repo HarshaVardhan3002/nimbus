@@ -187,6 +187,38 @@ ignores auth entirely.
 `default-src 'self'`, so a renderer-side fetch to `http://127.0.0.1:11434`
 would be silently blocked.
 
+### 4.1 The reasoning ladder
+
+Three tiers, not a boolean: **Simple**, **General**, **Smart**. They are rungs
+on one ladder rather than named presets, which is why the indicator cycles
+rather than opening a menu — the only question it answers is *how much thinking
+do I want here*, and that has an order.
+
+Each tier is a key in the same `routes` map that already held the fast/smart
+pair. There is no second routing concept: `routes.simple`, `routes.general`,
+`routes.smart` and the optional `routes.vision`, each `{ provider, model }`.
+`settings.tier` names the active rung. The v9 migration renames `fast` to
+`general` and converts the old `smart` boolean into that name, because the
+boolean's position was the only record of which tier had been answering.
+
+Two rules make the ladder survive an unconfigured machine:
+
+- **Simple borrows General** when it has no model of its own. A tier is a
+  promise about effort, not about which binary is loaded, so the floor of that
+  promise has to exist before anything is set up. 1.4.0 ships a model in the box
+  and the fallback stops mattering. The *model* decides the borrow, not the
+  provider — a Simple route naming a provider but no model would otherwise fall
+  through to that provider's default entry, which is a model nobody chose.
+- **Smart never borrows.** `providers.tiers()` reports it locked until its own
+  route resolves ready, because a Smart that quietly answers on General's model
+  makes the step up a lie.
+
+A locked rung is still visible and still steppable, and says in its title what
+would unlock it. Hiding it would make the app look limited; greying it out would
+make it look broken. `providers.tiers()` is the single source of that verdict and
+the renderer asks for it over `providers:tiers` rather than re-deriving it from
+routes and keys, which is a rule that would immediately exist in two versions.
+
 ### Vision gating
 
 Vision is a property of a **model**, not of a provider. One OpenAI-compatible
@@ -579,8 +611,9 @@ Three findings, each with a direct design consequence:
    tok/s local versus 78 tok/s cloud — so local wins on latency, cloud on
    throughput. Neither is simply "better".
 2. **The server is single-slot.** Switching models costs a full reload. A
-   fast/smart pair pointing at *different* models turns every Smart toggle into
-   an 8–10s stall, so `WarmthKeeper.switchWarning()` detects and reports it.
+   General/Smart pair pointing at *different* models turns every step between
+   tiers into an 8–10s stall, so `WarmthKeeper.switchWarning()` detects and
+   reports it.
 3. **It unloads on idle.** An assistant waiting for you to speak is idle by
    definition, so the first utterance after any pause paid ~15s. That was the
    common case, not an edge case.

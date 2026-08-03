@@ -43,7 +43,6 @@
     recap: 'refresh-cw', translate: 'languages', screenshot: 'monitor'
   };
   $$('.act').forEach((b) => { b.querySelector('.ic').innerHTML = icon(ACT_ICONS[b.dataset.mode] || 'sparkles', { size: 15 }); });
-  $('#smart .ic').innerHTML = icon('zap', { size: 13 });
   $('#send').innerHTML = icon('corner-down-left', { size: 15 });
   $('#s-close').innerHTML = icon('x', { size: 16 });
   $('#h-close').innerHTML = icon('x', { size: 16 });
@@ -587,7 +586,7 @@
     applyAdvanced(true);
     const target = kind === 'single'
       ? $('#route-smart-model')
-      : $('#f-' + (settings.smart ? 'smart' : 'fast') + '-window');
+      : $('#f-' + activeTier() + '-window');
     if (target) {
       target.scrollIntoView({ block: 'center' });
       target.focus();
@@ -716,10 +715,59 @@
     if (e.ctrlKey) runMode('assist', ''); else send();
   }, true);
 
-  $('#smart').addEventListener('click', async () => {
-    settings.smart = !settings.smart;
-    $('#smart').classList.toggle('on', settings.smart);
-    await app.settingsSet({ smart: settings.smart });
+  /**
+   * The reasoning ladder: Simple, General, Smart. Click steps up and wraps.
+   *
+   * Cycling rather than opening a menu because there are only three of them and
+   * the state is on screen the whole time -- a menu would cost a click to read
+   * something the button already says. Locked rungs are still steppable: landing
+   * on one shows what would unlock it, which is the only way a user finds out
+   * that Smart exists.
+   */
+  const TIER_ORDER = ['simple', 'general', 'smart'];
+  // Vision is a route but not a rung: it is a hand-off, never something the
+  // indicator can land on.
+  const ROUTE_TIERS = [...TIER_ORDER, 'vision'];
+  let tierState = null;
+
+  function activeTier() {
+    return TIER_ORDER.includes(settings.tier) ? settings.tier : 'general';
+  }
+
+  function paintTier() {
+    const id = activeTier();
+    const btn = $('#tier');
+    const info = (tierState || []).find((t) => t.id === id);
+    const i = TIER_ORDER.indexOf(id);
+
+    btn.dataset.tier = id;
+    $('#tier-name').textContent = info ? info.label : id;
+    btn.classList.toggle('locked', !!info && !info.unlocked);
+    btn.querySelectorAll('.tier-steps i').forEach((bar, n) => {
+      bar.classList.toggle('lit', n <= i);
+    });
+
+    const where = info && info.model
+      ? info.model + (info.provider ? ' on ' + info.provider : '')
+      : 'no model set';
+    btn.title = (info && !info.unlocked && info.reason)
+      ? info.label + ' — ' + info.reason
+      : (info ? info.label + ' · ' + where + '. Click to change.' : 'Reasoning tier');
+  }
+
+  async function refreshTiers() {
+    try { tierState = await app.tiers(); } catch { tierState = null; }
+    paintTier();
+  }
+
+  $('#tier').addEventListener('click', async () => {
+    const next = TIER_ORDER[(TIER_ORDER.indexOf(activeTier()) + 1) % TIER_ORDER.length];
+    settings.tier = next;
+    // Painted before the write lands: a control that waits on IPC to move reads
+    // as a control that missed the click.
+    paintTier();
+    await app.settingsSet({ tier: next });
+    await refreshTiers();
     refreshModelChip();
   });
 
@@ -1045,24 +1093,31 @@
    */
   function renderRoutes() {
     const routes = settings.routes || {};
-    for (const tier of ['fast', 'smart', 'vision']) {
+    for (const tier of ROUTE_TIERS) {
       const sel = $('#route-' + tier + '-provider');
       const inp = $('#route-' + tier + '-model');
       const r = routes[tier] || {};
 
       sel.innerHTML = '';
-      if (tier === 'vision') {
-        // Optional. Blank means "no hand-off, just skip the screenshot".
+      if (tier === 'vision' || tier === 'simple') {
+        // Both tiers are optional, and blank means different things: for Vision
+        // "no hand-off, skip the screenshot", for Simple "answer from General".
         const none = document.createElement('option');
-        none.value = ''; none.textContent = 'not set';
+        none.value = '';
+        none.textContent = tier === 'simple' ? 'same as General' : 'not set';
         if (!r.provider) none.selected = true;
         sel.appendChild(none);
       }
+      // An optional tier with no provider stays on its blank option; falling
+      // back to settings.provider there would select a second option and undo
+      // the blank one, which is how "same as General" would silently stop
+      // meaning that.
+      const want = (tier === 'vision' || tier === 'simple') ? r.provider : (r.provider || settings.provider);
       for (const p of providerList) {
         const o = document.createElement('option');
         o.value = p.id;
         o.textContent = p.label + (p.local ? '  (local)' : '');
-        if (p.id === (r.provider || settings.provider)) o.selected = true;
+        if (p.id === want) o.selected = true;
         sel.appendChild(o);
       }
       inp.value = r.model || '';
@@ -1124,7 +1179,9 @@
     if (!p) {
       hint.textContent = tier === 'vision'
         ? 'Optional. Screen questions go here when the active model cannot see images.'
-        : '';
+        : tier === 'simple'
+          ? 'Answers from General until a small local model ships in the box.'
+          : '';
       hint.classList.remove('bad');
       return;
     }
@@ -1243,7 +1300,7 @@
     updateRouteHint(tier);
   }
 
-  for (const tier of ['fast', 'smart']) {
+  for (const tier of TIER_ORDER) {
     $('#f-' + tier + '-vision').addEventListener('change', () => persistVisionOverride(tier));
     $('#f-' + tier + '-window').addEventListener('change', () => persistWindowOverride(tier));
   }
@@ -1278,12 +1335,15 @@
     settings.routes = Object.assign({}, settings.routes, { [tier]: { provider, model } });
     await app.settingsSet({ routes: settings.routes });
     updateRouteHint(tier);
+    // A route change is the thing that unlocks or locks a rung, so the indicator
+    // has to be re-asked rather than left showing the old verdict.
+    refreshTiers();
     refreshModelChip();
     renderRoutes();
     reportSize();
   }
 
-  for (const tier of ['fast', 'smart', 'vision']) {
+  for (const tier of ROUTE_TIERS) {
     $('#route-' + tier + '-provider').addEventListener('change', () => persistRoute(tier));
     // 'change' already fires on blur when the value actually changed, so a
     // second blur listener only bought a duplicate write plus a re-render that
@@ -1616,7 +1676,7 @@
      * visible answer, without the user hunting for a checkbox.
      */
     settings = await app.settingsGet();
-    for (const tier of ['fast', 'smart', 'vision']) {
+    for (const tier of ROUTE_TIERS) {
       if ($('#route-' + tier + '-provider').value !== editingProvider) continue;
       const list = $('#model-list-' + tier);
       fillDatalist(list, tier === 'vision' ? chat.filter((m) => m.vision) : chat);
@@ -2232,12 +2292,19 @@
 
   function refreshModelChip() {
     // Reads the ACTIVE TIER'S route, so the chip shows what will actually answer.
-    const tier = settings.smart ? 'smart' : 'fast';
-    const r = ((settings.routes || {})[tier]) || {};
+    const tier = activeTier();
+    const routes = settings.routes || {};
+    let r = routes[tier] || {};
+    // Simple borrows General until a model ships in the box. Same rule as
+    // providers.routeFor(); showing an empty chip here would describe a tier
+    // that answers perfectly well as broken.
+    if (tier === 'simple' && !r.provider && !(r.model || '').trim()) r = routes.general || {};
     const pid = r.provider || settings.provider;
     const p = providerList.find((x) => x.id === pid);
     const legacy = (settings.models && settings.models[pid]) || {};
-    const name = (r.model || legacy[tier] || '').trim() || '-';
+    // The per-provider map is still the old two-entry shape, so anything below
+    // Smart falls back to its `fast` entry.
+    const name = (r.model || legacy[tier === 'smart' ? 'smart' : 'fast'] || '').trim() || '-';
     $('#model-name').textContent = (p ? p.label + ' · ' : '') + name;
     $('#model-chip').title = tier.toUpperCase() + ' tier → ' + (p ? p.label : pid) + ' / ' + name;
   }
@@ -2592,7 +2659,7 @@
     } catch { /* non-fatal */ }
 
     document.documentElement.style.setProperty('--text-zoom', (settings.ui && settings.ui.textZoom) || 1);
-    $('#smart').classList.toggle('on', !!settings.smart);
+    await refreshTiers();
     refreshModelChip();
     // Must precede any settings render: the groups are hidden until a tab is
     // selected, so skipping this leaves an empty settings panel.

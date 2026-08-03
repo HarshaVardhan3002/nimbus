@@ -19,8 +19,8 @@ made harder to finish in order to make a later port easier.
 - There is no onboarding. `onboarded` is a flag in the store that nothing sets.
 - There is no tool calling anywhere in `src/llm.js`. The model cannot reach past
   its own weights.
-- `#smart` is a boolean toggle over a `routes` map that already understands
-  `fast`, `smart` and `vision` tiers.
+- The composer carries a three-state tier indicator over a `routes` map holding
+  `simple`, `general`, `smart` and `vision`.
 
 ## Principles this plan does not trade away
 

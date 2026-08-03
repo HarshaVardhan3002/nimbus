@@ -74,7 +74,12 @@
           <textarea id="input" rows="1" spellcheck="false" aria-label="Message"></textarea>
         </div>
         <div id="composer-bottom">
-          <button id="smart" class="chip" title="Use the smart model"><span class="ic"></span><span>Smart</span></button>
+          <!-- Three states, not a toggle. The steps are drawn as well as named,
+               so the current rung is readable without clicking or reading. -->
+          <button id="tier" class="chip tier" aria-label="Reasoning tier">
+            <span class="tier-steps" aria-hidden="true"><i></i><i></i><i></i></span>
+            <span id="tier-name">General</span>
+          </button>
           <button id="model-chip" class="chip subtle" title="Active model" aria-expanded="false"><span id="model-name">-</span></button>
           <!-- The numbers behind the rail. Opened from the model chip, because
                that is where "which model, and how much room is left" belongs. -->
@@ -234,16 +239,39 @@
         -->
         <div class="s-group" data-tab="models">
           <div class="s-label">Routing <span class="s-hint">what answers, and how well</span></div>
+
+          <!-- The floor of the ladder. Left blank it answers from General, so a
+               machine with one model configured still has all three rungs. -->
           <div class="route-row">
-            <span class="route-tier">Fast</span>
-            <select id="route-fast-provider"></select>
-            <input id="route-fast-model" type="text" spellcheck="false" list="model-list-fast" placeholder="model" />
+            <span class="route-tier simple">Simple</span>
+            <select id="route-simple-provider"></select>
+            <input id="route-simple-model" type="text" spellcheck="false" list="model-list-simple" placeholder="optional" />
           </div>
-          <datalist id="model-list-fast"></datalist>
-          <div class="route-hint" id="route-fast-hint"></div>
-          <div class="s-row" data-adv id="row-fast-vision">
+          <datalist id="model-list-simple"></datalist>
+          <div class="route-hint" id="route-simple-hint"></div>
+          <div class="s-row" data-adv id="row-simple-vision">
             <span>Images</span>
-            <select id="f-fast-vision" data-tier="fast" class="vision-override">
+            <select id="f-simple-vision" data-tier="simple" class="vision-override">
+              <option value="auto">Detect automatically</option>
+              <option value="yes">This model can see images</option>
+              <option value="no">Text only</option>
+            </select>
+          </div>
+          <div class="s-row" data-adv id="row-simple-window">
+            <span>Context window</span>
+            <input id="f-simple-window" type="text" spellcheck="false" inputmode="numeric" />
+          </div>
+
+          <div class="route-row">
+            <span class="route-tier">General</span>
+            <select id="route-general-provider"></select>
+            <input id="route-general-model" type="text" spellcheck="false" list="model-list-general" placeholder="model" />
+          </div>
+          <datalist id="model-list-general"></datalist>
+          <div class="route-hint" id="route-general-hint"></div>
+          <div class="s-row" data-adv id="row-general-vision">
+            <span>Images</span>
+            <select id="f-general-vision" data-tier="general" class="vision-override">
               <option value="auto">Detect automatically</option>
               <option value="yes">This model can see images</option>
               <option value="no">Text only</option>
@@ -251,9 +279,9 @@
           </div>
           <!-- Blank means "work it out". Worth typing only when a server
                declares nothing and the assumed figure is visibly wrong. -->
-          <div class="s-row" data-adv id="row-fast-window">
+          <div class="s-row" data-adv id="row-general-window">
             <span>Context window</span>
-            <input id="f-fast-window" type="text" spellcheck="false" inputmode="numeric" />
+            <input id="f-general-window" type="text" spellcheck="false" inputmode="numeric" />
           </div>
 
           <div class="route-row">

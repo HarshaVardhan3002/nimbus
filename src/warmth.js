@@ -98,12 +98,12 @@ class WarmthKeeper {
   }
 
   /**
-   * Warn when the fast/smart pair would thrash a single-slot server.
+   * Warn when stepping between tiers would thrash a single-slot server.
    * Returns null when there is nothing to say.
    */
   switchWarning(settings) {
     const s = settings || this.getSettings();
-    const f = providers.resolveTier(s, 'fast');
+    const f = providers.resolveTier(s, 'general');
     const m = providers.resolveTier(s, 'smart');
     if (!f || !m) return null;
 
@@ -113,8 +113,8 @@ class WarmthKeeper {
     if (!f.local) return null;
     if (!f.model || !m.model || f.model === m.model) return null;
 
-    return 'Fast and Smart use different models on the same local server. Local servers '
-      + 'usually hold one model at a time, so toggling Smart forces a reload (measured '
+    return 'General and Smart use different models on the same local server. Local servers '
+      + 'usually hold one model at a time, so stepping between them forces a reload (measured '
       + '8-10s here). Point one tier at a different provider, or use the same model for both.';
   }
 
@@ -142,7 +142,7 @@ class WarmthKeeper {
     const settings = this.getSettings();
     // Warm whichever provider the ACTIVE tier routes to -- with independent
     // routes the two tiers may be different servers entirely.
-    const p = providers.resolveTier(settings, settings.smart ? 'smart' : 'fast');
+    const p = providers.resolveTier(settings, providers.activeTier(settings));
 
     // Only local endpoints benefit. Pinging a metered cloud API on a timer
     // would burn tokens for nothing.

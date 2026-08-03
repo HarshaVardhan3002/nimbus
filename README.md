@@ -57,7 +57,7 @@ Nimbus stays compact until you open the panel, then exposes the actions and sett
 <p align="center"><em>The chat surface and the pill menu.</em></p>
 
 <p align="center">
-  <img src="docs/images/settings-models.png" width="49%" alt="Nimbus Models settings, showing independent Fast, Smart, and Vision routes">
+  <img src="docs/images/settings-models.png" width="49%" alt="Nimbus Models settings, showing independent Simple, General, Smart, and Vision routes">
   <img src="docs/images/settings-voice.png" width="49%" alt="Nimbus Voice settings with local transcription and listening controls">
 </p>
 
@@ -133,7 +133,7 @@ All model setup is available in the Settings view; no `.env` file is required.
 | NVIDIA NIM | Enter an NVIDIA API key and model names. | `https://integrate.api.nvidia.com/v1` |
 | Custom | Add an OpenAI-compatible endpoint and, if it needs one, a key. | Your endpoint |
 
-Nimbus has independent **Fast**, **Smart**, and optional **Vision** routes. That means a quick local model can handle routine prompts while a cloud model handles more demanding work. Whether a model can see images is detected per model — from what the server declares, or from what a request proves — so screen questions work without configuring anything. A screen request is redirected to the Vision route only when the active chat model is known to be text-only.
+Nimbus has independent **Simple**, **General**, **Smart**, and optional **Vision** routes. The indicator in the composer steps through the three reasoning tiers; a tier with no model of its own answers from the one below it. That means a quick local model can handle routine prompts while a cloud model handles more demanding work. Whether a model can see images is detected per model — from what the server declares, or from what a request proves — so screen questions work without configuring anything. A screen request is redirected to the Vision route only when the active chat model is known to be text-only.
 
 Settings show what is needed to get running. **Show advanced settings**, at the bottom of the settings screen, reveals the rest on every tab at once: capability overrides, the Vision route, VAD tuning, context depth, the reply ceiling, and build diagnostics.
 
@@ -211,7 +211,7 @@ A typed question does not capture the screen. Sending the display to a provider 
 - **Streaming responses:** tokens are forwarded to the panel as they arrive; an active request can be aborted with the stop button or <kbd>Esc</kbd>.
 - **Visible reasoning:** models that stream a separate reasoning channel show a live "Thinking…" block that collapses into "Thought for *n*s" once the answer starts, so a slow reasoning model does not look like a hung one.
 - **Reply-length ceiling:** a per-answer token cap in Settings › Privacy, so a verbose or reasoning-heavy model cannot run away with the budget.
-- **Independent provider routing:** local and cloud endpoints can coexist, with separate Fast, Smart, and Vision assignments.
+- **Independent provider routing:** local and cloud endpoints can coexist, with separate Simple, General, Smart, and Vision assignments.
 - **Audio pipeline:** microphone and Windows loopback audio are segmented in an AudioWorklet using adaptive energy VAD, pre-roll, and a silence hangover before transcription.
 - **Push-to-talk microphone:** system audio is the default listening source; the microphone opens only while a rebindable chord or the pill's talk button is held. The gate is applied inside the audio worklet, so muted frames are discarded on the audio thread rather than buffered and filtered later, and the main process enforces the same rule again at the transcription intake. The microphone can also be set to always-on or switched off so the device is never opened.
 - **Conversation history:** sessions and a searchable index are stored locally, with a configurable number of earlier turns supplied as model context.
@@ -311,7 +311,7 @@ The renderer cannot invoke arbitrary Node APIs. [`preload.js`](preload.js) maps 
 
 `runFeature(mode, userText)` in [`main.js`](main.js) turns a UI action into a model request:
 
-1. It loads current settings and resolves the selected Fast or Smart route.
+1. It loads current settings and resolves the active tier's route — Simple, General or Smart.
 2. For screen-aware modes, it redirects to the optional Vision route if the current model is text-only.
 3. It captures the screen only when the final route can accept images.
 4. It builds a mode-specific system prompt and user content from [`src/prompts.js`](src/prompts.js).
@@ -331,7 +331,7 @@ function resolveTier(settings, tier) {
 }
 ```
 
-This is why changing the Smart route does not alter the Fast route. A local endpoint can be keyless; the provider registry separates `needsKey` from model readiness so Ollama and LM Studio are valid configurations without invented credentials.
+This is why changing the Smart route does not alter the General route. A local endpoint can be keyless; the provider registry separates `needsKey` from model readiness so Ollama and LM Studio are valid configurations without invented credentials.
 
 [`src/llm.js`](src/llm.js) chooses the provider transport, normalizes streaming callbacks, and has a single recovery path for misclassified vision models: if an image request is rejected in a way that looks vision-related, it retries once without the image and tells the UI why.
 

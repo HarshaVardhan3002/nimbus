@@ -57,6 +57,7 @@ contextBridge.exposeInMainWorld('nimbus', {
   settingsGet: () => ipcRenderer.invoke('settings:get'),
   settingsSet: (patch) => ipcRenderer.invoke('settings:set', patch),
   providers: () => ipcRenderer.invoke('providers:list'),
+  tiers: () => ipcRenderer.invoke('providers:tiers'),
   discoverModels: (id, opts) => ipcRenderer.invoke('providers:discover', id, opts),
   testProvider: (id) => ipcRenderer.invoke('providers:test', id),
   discoverSttModels: () => ipcRenderer.invoke('stt:discover'),

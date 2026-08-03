@@ -149,8 +149,8 @@ async function runDigest(block) {
   const settings = store.getSettings();
   const def = DIGEST[block.mode] || DIGEST.summarize;
 
-  const llm = createLLM(settings, 'fast');
-  if (!llm.ready) throw new Error(llm.reason || 'No fast model configured.');
+  const llm = createLLM(settings, 'general');
+  if (!llm.ready) throw new Error(llm.reason || 'No General model configured.');
 
   const targetLang = (settings.stt && settings.stt.targetLang) || 'English';
   const inputTokens = estimateTurns(block.turns);
@@ -400,7 +400,7 @@ function assembleContext(settings) {
  */
 function contextSnapshot() {
   const settings = store.getSettings();
-  const llm = createLLM(settings, settings.smart ? 'smart' : 'fast');
+  const llm = createLLM(settings, providers.activeTier(settings));
   if (!llm.ready || !llm.model) return null;
 
   const budget = providers.contextBudgetFor(settings, llm.provider, llm.model);
@@ -489,7 +489,7 @@ async function runCompaction({ auto } = {}) {
    * with one model in exactly the state this feature exists to fix.
    */
   let llm = createLLM(settings, 'smart');
-  if (!llm.ready) llm = createLLM(settings, settings.smart ? 'smart' : 'fast');
+  if (!llm.ready) llm = createLLM(settings, providers.activeTier(settings));
   if (!llm.ready) {
     return { ok: false, reason: llm.reason || 'No model is configured to compress with.' };
   }
@@ -1019,7 +1019,7 @@ async function runFeature(mode, userText) {
   try {
     const settings = store.getSettings();
     // Resolve through the tier's own route, not a global provider.
-    const llm = createLLM(settings, settings.smart ? 'smart' : 'fast');
+    const llm = createLLM(settings, providers.activeTier(settings));
 
     if (wm) wm.openPanel({ focus: false });
 
@@ -1306,6 +1306,15 @@ function registerIPC() {
   });
 
   /**
+   * The reasoning ladder, resolved.
+   *
+   * The renderer must not re-derive "is Smart usable yet" from routes and keys:
+   * the answer depends on provider metadata the renderer does not hold, and two
+   * copies of that rule would disagree the first time one changed.
+   */
+  ipcMain.handle('providers:tiers', () => providers.tiers(store.getSettings()));
+
+  /**
    * Settings that can be applied without a restart do so here; the renderer
    * asks for a relaunch only for the ones that genuinely cannot.
    */
@@ -1538,7 +1547,7 @@ function registerIPC() {
     // left over from the single-provider shape, so the reported TTFT belonged to
     // whichever provider happened to be in the legacy slot rather than to the
     // model that is actually going to answer.
-    const active = providers.resolveTier(s, s.smart ? 'smart' : 'fast');
+    const active = providers.resolveTier(s, providers.activeTier(s));
     return {
       ...(warmth ? warmth.status() : { enabled: false }),
       switchWarning: warmth ? warmth.switchWarning(s) : null,

@@ -356,12 +356,13 @@ function explain(err, p) {
 
 /**
  * @param settings  full settings object
- * @param tierOrId  'fast' | 'smart' to resolve through routes, or an explicit
- *                  provider id to bypass routing (used by discovery).
+ * @param tierOrId  'simple' | 'general' | 'smart' to resolve through routes, or
+ *                  an explicit provider id to bypass routing (used by
+ *                  discovery).
  */
 function createLLM(settings, tierOrId) {
-  // ROUTE_TIERS, not TIERS: 'vision' is a route too. Testing against the
-  // fast/smart pair sent 'vision' down the provider-id branch, where it resolved
+  // ROUTE_TIERS, not TIERS: 'vision' is a route too. Testing against the tier
+  // ladder alone sent 'vision' down the provider-id branch, where it resolved
   // to nothing and then crashed on the line below.
   const isRoute = tierOrId == null || providers.ROUTE_TIERS.includes(tierOrId);
   const p = isRoute
@@ -546,7 +547,7 @@ async function testConnection(settings, id, { maxTokens = 512 } = {}) {
       const model = routes[tier].model.trim();
       const models = Object.assign({}, settings.models);
       models[id] = Object.assign({}, models[id], { fast: model, smart: model });
-      settings = Object.assign({}, settings, { models, smart: false });
+      settings = Object.assign({}, settings, { models, tier: 'general' });
       p = providers.resolve(settings, id);
     }
   }
