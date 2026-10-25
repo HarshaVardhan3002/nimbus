@@ -13,10 +13,11 @@ It sees your screen, hears your meeting or video, and answers in a small pill th
 <img src="https://img.shields.io/badge/Electron%20%2B%20Win32%20%2B%20whisper.cpp-2b3137" alt="Built with Electron, Win32 and whisper.cpp">
 <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0--or--later-9be37a" alt="License: GPL-3.0-or-later"></a>
 
-<img src="docs/images/overlay-chat.png" width="49%" alt="Nimbus chat panel open beneath its pill overlay">
-<img src="docs/images/overlay-menu.png" width="49%" alt="Nimbus overlay menu with listening, settings, and quit actions">
+<a href="docs/media/nimbus-promo.mp4">
+  <img src="docs/media/nimbus-preview.webp" width="880" alt="Nimbus in 19 seconds: the pill opens the chat, it explains a bug in the code on screen, switches thinking level, transcribes a meeting, then recaps it, suggests follow-up questions, translates it to German and suggests a reply, and finally shows history and settings">
+</a>
 
-<sub>The chat panel under its pill, and the pill menu.</sub>
+<sub>Real screen recording with a local model (Holo 3.1), waits sped up. <a href="docs/media/nimbus-promo.mp4">Watch the full-quality video (MP4)</a>.</sub>
 
 [**Download the installer**](https://github.com/HarshaVardhan3002/nimbus/releases/latest) · [Quick start](#quick-start) · [Features](#features) · [Architecture](#architecture) · [Roadmap](#roadmap)
 
