@@ -6,6 +6,8 @@
 
 <p align="center"><strong>A Windows-native, local-first AI overlay for screen context, live conversation, and quick answers.</strong></p>
 
+> **Successor:** [Nimbus 1.0](https://github.com/HarshaVardhan3002/Nimbus_revanced) is the rewrite in Rust and Tauri. It adds acting in apps, routines, plugins and builds for Windows, macOS and Linux. This repository is the original Electron version.
+
 <p align="center">
   <a href="https://github.com/HarshaVardhan3002/nimbus/releases/latest"><img src="https://img.shields.io/github/v/release/HarshaVardhan3002/nimbus?label=release" alt="Latest release"></a>
   <a href="https://github.com/HarshaVardhan3002/nimbus/releases/latest"><img src="https://img.shields.io/github/downloads/HarshaVardhan3002/nimbus/total?label=downloads" alt="Downloads"></a>
@@ -259,7 +261,7 @@ flowchart TB
   VAD["AudioWorklet\nVAD, pre-roll, utterance buffer"]
   STT["STT queue\nlocal / OpenAI / Gemini"]
   LLM["LLM transport\nOpenAI-compatible / Anthropic / Gemini"]
-  STORE["Local JSON store\nsettings + history"]
+  STORE["Local store\nsettings JSON + history SQLite"]
   WIN["Win32 / DWM layer\nregions, glass, capture affinity"]
 
   P --> PRE
@@ -381,7 +383,7 @@ There is a real Windows trade-off: DWM acrylic paints over the full rectangular 
 
 [`src/store.js`](src/store.js) deep-merges versioned defaults with `nimbus-data.json` in Electron's user-data directory. It debounces writes and uses a temporary-file rename for atomic updates. Settings changes are broadcast back to both renderers after main has accepted them.
 
-[`src/history.js`](src/history.js) stores one JSON file per conversation plus a compact index. That keeps the history browser fast and allows a single corrupt or deleted session to affect only that session. The default model context is the most recent 12 user/assistant turns; changing it trades follow-up quality against prompt size and latency.
+[`src/history.js`](src/history.js) owns the shape of a conversation and the rules about it; [`src/db.js`](src/db.js) owns the SQL for the local SQLite database. The split keeps a later storage change to one file. The default model context is the most recent 12 user/assistant turns; changing it trades follow-up quality against prompt size and latency.
 
 ### 7. Local-model warming
 
@@ -413,14 +415,13 @@ ARCHITECTURE.md             Detailed engineering notes and measured behavior
 ## Known limitations
 
 - The app is Windows-first; macOS and Linux are not supported release targets.
-- Local STT requires a separately running compatible server. Nimbus does not download or host a Whisper model itself.
 - The VAD is energy-based, not a neural voice activity detector. It can still react to loud non-speech audio.
 - Wake-word matching happens after transcription, so it is not an instant keyword spotter. It also only matches the microphone channel, so with the microphone on push to talk it fires only while the talk key is held.
 - Hold-to-talk needs the Win32 layer for key-up detection. Without it the chord becomes a press/press-again latch; `native:status` reports which one is active.
 - The talk chord is observed, not claimed, so binding a combination another application already uses will trigger that application as well.
 - Push-to-talk holds the microphone device open for the whole listening session so the first word is not clipped, which means the Windows microphone-in-use indicator stays lit even while the mic is muted. Set the microphone to **Off** if the device must not be opened at all.
 - Screen capture depends on the selected route being truly vision-capable. Nimbus has safeguards and a text-only retry, but provider capability metadata can be incomplete.
-- Device control and agentic actions are not implemented; Nimbus can read screen/audio context but does not operate other applications.
+- Device control and agentic actions are not implemented here; this version reads screen and audio context but does not operate other applications. Nimbus 1.0 adds that.
 - Speaker-verification primitives exist in `src/audio/speaker.js`, but identity-based routing is not currently wired into the live transcript pipeline.
 
 ## Roadmap
