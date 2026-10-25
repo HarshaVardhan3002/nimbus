@@ -1,27 +1,31 @@
+<div align="center">
+
+<img src="build/icon-preview.png" width="96" alt="Nimbus app icon">
+
 # Nimbus
 
-<p align="center">
-  <img src="build/icon-preview.png" width="128" alt="Nimbus app icon">
-</p>
+**A Windows-native, local-first AI overlay.**<br>
+It sees your screen, hears your meeting or video, and answers in a small pill that stays out of the way.
 
-<p align="center"><strong>A Windows-native, local-first AI overlay for screen context, live conversation, and quick answers.</strong></p>
+<a href="https://github.com/HarshaVardhan3002/nimbus/releases/latest"><img src="https://img.shields.io/github/v/release/HarshaVardhan3002/nimbus?label=release&color=9be37a" alt="Latest release"></a>
+<a href="https://github.com/HarshaVardhan3002/nimbus/releases/latest"><img src="https://img.shields.io/github/downloads/HarshaVardhan3002/nimbus/total?label=downloads&color=2b3137" alt="Downloads"></a>
+<img src="https://img.shields.io/badge/platform-Windows%2010%2F11%20x64-2b3137" alt="Platform: Windows 10/11 x64">
+<img src="https://img.shields.io/badge/Electron%20%2B%20Win32%20%2B%20whisper.cpp-2b3137" alt="Built with Electron, Win32 and whisper.cpp">
+<a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0--or--later-9be37a" alt="License: GPL-3.0-or-later"></a>
 
-> **Successor:** [Nimbus 1.0](https://github.com/HarshaVardhan3002/Nimbus_revanced) is the rewrite in Rust and Tauri. It adds acting in apps, routines, plugins and builds for Windows, macOS and Linux. This repository is the original Electron version.
+<img src="docs/images/overlay-chat.png" width="49%" alt="Nimbus chat panel open beneath its pill overlay">
+<img src="docs/images/overlay-menu.png" width="49%" alt="Nimbus overlay menu with listening, settings, and quit actions">
 
-<p align="center">
-  <a href="https://github.com/HarshaVardhan3002/nimbus/releases/latest"><img src="https://img.shields.io/github/v/release/HarshaVardhan3002/nimbus?label=release" alt="Latest release"></a>
-  <a href="https://github.com/HarshaVardhan3002/nimbus/releases/latest"><img src="https://img.shields.io/github/downloads/HarshaVardhan3002/nimbus/total?label=downloads" alt="Downloads"></a>
-  <img src="https://img.shields.io/badge/platform-Windows%2010%2F11%20x64-blue" alt="Platform: Windows 10/11 x64">
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0--or--later-green" alt="License: GPL-3.0-or-later"></a>
-</p>
+<sub>The chat panel under its pill, and the pill menu.</sub>
 
-<p align="center">
-  <a href="https://github.com/HarshaVardhan3002/nimbus/releases/latest"><strong>Download the installer</strong></a>
-  · <a href="#quick-start">Quick start</a>
-  · <a href="#roadmap">Roadmap</a>
-</p>
+[**Download the installer**](https://github.com/HarshaVardhan3002/nimbus/releases/latest) · [Quick start](#quick-start) · [Features](#features) · [Architecture](#architecture) · [Roadmap](#roadmap)
 
-> The installer is not code-signed, so Windows SmartScreen warns on first run: choose **More info** → **Run anyway**. It installs per user and does not require admin.
+</div>
+
+> [!TIP]
+> **There is a successor.** [Nimbus 1.0](https://github.com/HarshaVardhan3002/Nimbus_revanced) is the rewrite in Rust and Tauri. It adds acting in apps, routines, plugins and builds for Windows, macOS and Linux. This repository is the original Electron version.
+
+---
 
 Nimbus is an Electron desktop assistant that stays in a compact pill until you need it. It can stream responses from local or cloud models, look at the current screen when the selected model supports vision, transcribe microphone and system audio through an independent speech-to-text backend, and retain searchable local conversation history.
 
@@ -30,47 +34,71 @@ It is designed around two ideas:
 - **Keep the overlay out of the way.** The pill and chat panel are separate native windows, so the empty gap between them is genuinely click-through.
 - **Keep the model choice yours.** Ollama and LM Studio work without API keys; OpenAI-compatible servers, OpenAI, Anthropic, Gemini, NVIDIA NIM, and custom endpoints are configurable from the app.
 
+### At a glance
+
+<table>
+<tr>
+<td width="33%" valign="top">
+
+**🖥️ Sees the screen**<br>
+Ask about what is on screen. The image goes only to a model that can read it, and only when you ask.
+
+</td>
+<td width="33%" valign="top">
+
+**🎧 Hears the room**<br>
+Transcribes system audio (a video, a call) and push-to-talk speech with a local Whisper it sets up for your graphics chip.
+
+</td>
+<td width="33%" valign="top">
+
+**🧠 Your models**<br>
+Ollama, LM Studio, OpenAI, Anthropic, Gemini, NVIDIA NIM or any OpenAI-compatible server, in Simple, General, Smart and Vision tiers.
+
+</td>
+</tr>
+<tr>
+<td valign="top">
+
+**🪟 Native overlay**<br>
+Two real windows with Win32 glass and rounded hit regions, moved by a spring in the main process.
+
+</td>
+<td valign="top">
+
+**💬 Live help**<br>
+Answers, reply suggestions, follow-up questions, recaps and translation from the current transcript.
+
+</td>
+<td valign="top">
+
+**🔒 Local first**<br>
+History in a local SQLite file, optional exclusion from screen capture, no account needed with local models.
+
+</td>
+</tr>
+</table>
+
+> [!NOTE]
+> The installer is not code-signed, so Windows SmartScreen warns on first run: choose **More info** → **Run anyway**. It installs per user and does not require admin.
+
 > [!WARNING]
 > Nimbus is Windows-focused. Native glass and exact window clipping use Win32 APIs. On unsupported systems, the native layer falls back to a CSS appearance, but the app is not tested or packaged for macOS/Linux.
 
-## Contents
-
-- [Quick start](#quick-start)
-- [Configure a model](#configure-a-model)
-- [Use Nimbus](#use-nimbus)
-- [Features](#features)
-- [Privacy and local data](#privacy-and-local-data)
-- [Build and verify](#build-and-verify)
-- [Architecture](#architecture)
-- [Code deep dive](#code-deep-dive)
-- [Project map](#project-map)
-- [Known limitations](#known-limitations)
-- [Roadmap](#roadmap)
-
-## In action
-
-Nimbus stays compact until you open the panel, then exposes the actions and settings needed for the current task.
-
-<p align="center">
-  <img src="docs/images/overlay-chat.png" width="49%" alt="Nimbus chat panel open beneath its pill overlay">
-  <img src="docs/images/overlay-menu.png" width="49%" alt="Nimbus overlay menu with listening, settings, and quit actions">
-</p>
-
-<p align="center"><em>The chat surface and the pill menu.</em></p>
+<details>
+<summary><b>Settings screenshots</b> (models, voice, privacy, look)</summary>
 
 <p align="center">
   <img src="docs/images/settings-models.png" width="49%" alt="Nimbus Models settings, showing independent Simple, General, Smart, and Vision routes">
   <img src="docs/images/settings-voice.png" width="49%" alt="Nimbus Voice settings with local transcription and listening controls">
 </p>
 
-<p align="center"><em>Models and Voice settings.</em></p>
-
 <p align="center">
   <img src="docs/images/settings-privacy.png" width="49%" alt="Nimbus Privacy settings with capture protection and conversation-context controls">
   <img src="docs/images/settings-look.png" width="49%" alt="Nimbus Look settings with glass mode and text-size controls">
 </p>
 
-<p align="center"><em>Privacy and appearance settings.</em></p>
+</details>
 
 ## Quick start
 
@@ -286,6 +314,11 @@ Each renderer reports only the axis it owns: the pill reports width and the pane
 
 ## Code deep dive
 
+Seven short tours through the code, from startup to local-model warming.
+
+<details>
+<summary><b>Open the deep dive</b></summary>
+
 ### 1. Startup and process boundaries
 
 [`main.js`](main.js) is the composition root. It obtains the single-instance lock, configures media permissions and Windows loopback capture, creates the `WindowManager`, registers global shortcuts, and installs IPC handlers.
@@ -388,6 +421,8 @@ There is a real Windows trade-off: DWM acrylic paints over the full rectangular 
 ### 7. Local-model warming
 
 [`src/warmth.js`](src/warmth.js) pings the active local model with a tiny request on a 12-second cadence. It intentionally skips cloud providers, where a keep-warm request would consume paid API usage for little benefit. It also detects a likely fast/smart model-switch penalty when both routes share a single-slot local server.
+
+</details>
 
 ## Project map
 
